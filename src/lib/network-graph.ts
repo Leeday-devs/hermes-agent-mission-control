@@ -13,7 +13,8 @@ export type NetworkNodeType =
   | "client"
   | "agent"
   | "event"
-  | "request";
+  | "request"
+  | "drive";
 
 export interface NetworkNode {
   id: string;
@@ -24,6 +25,9 @@ export interface NetworkNode {
   owner: string | null;
   updatedAt: string | null;
   orphaned: boolean;
+  // Only set for "drive" nodes — where a viewer can safely open the item.
+  // Never a credential, content, or sharing-metadata field.
+  webViewLink?: string | null;
 }
 
 export interface NetworkEdge {
@@ -96,6 +100,18 @@ export interface RawRequestRow {
   createdAt: Date | string | null;
 }
 
+// One row per Drive file/folder within the curated root's descendant tree.
+// parentId is that item's actual Drive parent id — never inferred, and only
+// ever the single primary parent within the curated subtree.
+export interface RawDriveRow {
+  id: string;
+  name: string;
+  mimeType: string;
+  modifiedTime: Date | string | null;
+  parentId: string | null;
+  webViewLink: string | null;
+}
+
 export interface NetworkGraphInput {
   memory?: RawMemoryRow[];
   tasks?: RawTaskRow[];
@@ -103,7 +119,10 @@ export interface NetworkGraphInput {
   clients?: RawClientRow[];
   events?: RawEventRow[];
   requests?: RawRequestRow[];
+  drive?: RawDriveRow[];
 }
+
+const DRIVE_FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
 
 function iso(value: Date | string | null | undefined): string | null {
   if (!value) return null;
@@ -124,6 +143,7 @@ export function buildNetworkGraph(input: NetworkGraphInput): NetworkGraph {
     clients = [],
     events = [],
     requests = [],
+    drive = [],
   } = input;
 
   const nodes = new Map<string, NetworkNode>();
@@ -219,6 +239,20 @@ export function buildNetworkGraph(input: NetworkGraphInput): NetworkGraph {
     });
   }
 
+  for (const d of drive) {
+    addNode({
+      id: `drive:${d.id}`,
+      type: "drive",
+      label: d.name,
+      source: "Google Drive",
+      status: d.mimeType === DRIVE_FOLDER_MIME_TYPE ? "folder" : "file",
+      owner: null,
+      updatedAt: iso(d.modifiedTime),
+      orphaned: false,
+      webViewLink: d.webViewLink ?? null,
+    });
+  }
+
   // Agent nodes are synthesized only from explicit references
   // (task assignee, event agent) — never invented.
   const agentNames = new Set<string>();
@@ -262,6 +296,9 @@ export function buildNetworkGraph(input: NetworkGraphInput): NetworkGraph {
   }
   for (const r of requests) {
     if (r.hermesTaskId) addEdge(`request:${r.id}`, `task:${r.hermesTaskId}`, "request-task");
+  }
+  for (const d of drive) {
+    if (d.parentId) addEdge(`drive:${d.id}`, `drive:${d.parentId}`, "drive-parent");
   }
 
   for (const node of nodes.values()) {

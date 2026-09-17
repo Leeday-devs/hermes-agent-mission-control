@@ -224,6 +224,7 @@ textarea, input {
   --net-client:  #b39ddb;
   --net-event:   #56d1c9;
   --net-request: #e2a8d8;
+  --net-drive:   #e0a458;
 }
 
 /* tabular/mono numerals — everywhere numbers compare or align */

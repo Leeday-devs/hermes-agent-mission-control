@@ -138,6 +138,88 @@ test("computeNetworkHealth counts totals and orphans from a mixed graph", () => 
   assert.deepEqual(health, { totalNodes: 3, totalEdges: 1, orphanedNodes: 1 });
 });
 
+test("Drive rows become drive nodes with only safe fields, kind derived from mimeType", () => {
+  const graph = buildNetworkGraph({
+    drive: [
+      {
+        id: "root",
+        name: "Curated Root",
+        mimeType: "application/vnd.google-apps.folder",
+        modifiedTime: "2026-01-01T00:00:00.000Z",
+        parentId: null,
+        webViewLink: "https://drive.google.com/drive/folders/root",
+      },
+      {
+        id: "f1",
+        name: "Notes.pdf",
+        mimeType: "application/pdf",
+        modifiedTime: "2026-01-02T00:00:00.000Z",
+        parentId: "root",
+        webViewLink: "https://drive.google.com/file/d/f1/view",
+      },
+    ],
+  });
+
+  assert.equal(graph.nodes.length, 2);
+  const root = graph.nodes.find((n) => n.id === "drive:root")!;
+  const file = graph.nodes.find((n) => n.id === "drive:f1")!;
+
+  assert.deepEqual(root, {
+    id: "drive:root", type: "drive", label: "Curated Root", source: "Google Drive",
+    status: "folder", owner: null, updatedAt: "2026-01-01T00:00:00.000Z", orphaned: false,
+    webViewLink: "https://drive.google.com/drive/folders/root",
+  });
+  assert.deepEqual(file, {
+    id: "drive:f1", type: "drive", label: "Notes.pdf", source: "Google Drive",
+    status: "file", owner: null, updatedAt: "2026-01-02T00:00:00.000Z", orphaned: false,
+    webViewLink: "https://drive.google.com/file/d/f1/view",
+  });
+
+  assert.equal(graph.edges.length, 1);
+  assert.deepEqual(graph.edges[0], { id: "drive-parent:drive:f1->drive:root", source: "drive:f1", target: "drive:root", type: "drive-parent" });
+});
+
+test("a Drive row's parent link is only realized as an edge when the parent node is also present (curated-scope boundary)", () => {
+  const graph = buildNetworkGraph({
+    drive: [
+      {
+        id: "root",
+        name: "Curated Root",
+        mimeType: "application/vnd.google-apps.folder",
+        modifiedTime: null,
+        parentId: "some-outer-folder-not-in-scope",
+        webViewLink: null,
+      },
+    ],
+  });
+  assert.equal(graph.edges.length, 0);
+  assert.equal(graph.nodes[0].orphaned, true);
+  assert.equal(graph.nodes[0].webViewLink, null);
+});
+
+test("never leaks Drive sharing/content/credential metadata a caller accidentally attaches to a row", () => {
+  const graph = buildNetworkGraph({
+    drive: [
+      {
+        id: "f1",
+        name: "Doc",
+        mimeType: "application/pdf",
+        modifiedTime: null,
+        parentId: null,
+        webViewLink: "https://drive.google.com/file/d/f1/view",
+        owners: [{ emailAddress: "SECRET_OWNER_EMAIL" }],
+        permissions: ["SECRET_PERMISSION"],
+        webContentLink: "SECRET_DOWNLOAD_URL",
+        accessToken: "SECRET_TOKEN",
+      } as never,
+    ],
+  });
+  const serialized = JSON.stringify(graph);
+  for (const secret of ["SECRET_OWNER_EMAIL", "SECRET_PERMISSION", "SECRET_DOWNLOAD_URL", "SECRET_TOKEN"]) {
+    assert.ok(!serialized.includes(secret), `expected ${secret} to be absent from graph output`);
+  }
+});
+
 test("never leaks private fields (meta/prompt/result/error/body) that a caller accidentally attaches to a row", () => {
   const graph = buildNetworkGraph({
     memory: [{ id: "a", title: "A", type: "fact", status: "active", links: [], provenance: null, updatedAt: null, body: "SECRET_BODY" } as never],

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { X, Copy } from "lucide-react";
+import { X, Copy, ExternalLink } from "lucide-react";
 import type { NetworkEdge, NetworkNode } from "@/lib/network-graph";
 import { Pill, Button, Eyebrow } from "@/components/ui/kit";
 import { NODE_TYPE_LABEL, NODE_TYPE_LINK, NODE_TYPE_LINK_LABEL } from "./constants";
@@ -116,7 +116,19 @@ export function NetworkInspector({ node, edges, nodesById, onClose, onSelectNode
       </div>
 
       <div className="mt-6 flex flex-wrap gap-2">
-        <Button size="sm" href={NODE_TYPE_LINK[node.type]}>{NODE_TYPE_LINK_LABEL[node.type]}</Button>
+        {node.type === "drive" ? (
+          node.webViewLink ? (
+            <Button size="sm" href={node.webViewLink} target="_blank" rel="noopener noreferrer">
+              <ExternalLink className="w-3.5 h-3.5" /> Open in Drive
+            </Button>
+          ) : (
+            <span className="text-[12px] text-[var(--text-4)] px-1 py-1.5">No link available</span>
+          )
+        ) : (
+          NODE_TYPE_LINK[node.type] && (
+            <Button size="sm" href={NODE_TYPE_LINK[node.type]}>{NODE_TYPE_LINK_LABEL[node.type]}</Button>
+          )
+        )}
         <Button size="sm" variant="ghost" onClick={copyId}>
           <Copy className="w-3.5 h-3.5" /> Copy ID
         </Button>

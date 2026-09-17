@@ -24,6 +24,8 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { HERMES_CLI_VERSION, assertRunnable, buildRunArgs } from "./lib/commands.mjs";
+import { formatProcessError } from "./lib/error-format.mjs";
+import { DRIVE_ROOT_FOLDER_ID, crawlCuratedDriveTree } from "./lib/drive-mirror.mjs";
 
 const execFileP = promisify(execFile);
 const HERMES = process.env.HERMES_BIN || "hermes";
@@ -32,6 +34,14 @@ const POLL_MS = Number(process.env.BRIDGE_POLL_MS || 5000);
 const MIRROR_MS = Number(process.env.BRIDGE_MIRROR_MS || 30000);
 const RUN_TIMEOUT_MS = Number(process.env.BRIDGE_RUN_TIMEOUT_MS || 240000);
 const WIKI_DIR = process.env.HERMES_WIKI || path.join(os.homedir(), ".hermes", "wiki");
+// The already-authenticated Hermes Google Workspace OAuth client — this is
+// the trust boundary for Drive access. Its refresh token never leaves this
+// process: only the shaped rows crawlCuratedDriveTree() returns get written
+// to Postgres. The website's separate NextAuth Google client cannot receive
+// a Drive refresh token, so it must never talk to Drive directly.
+const GOOGLE_TOKEN_FILE = process.env.HERMES_GOOGLE_TOKEN_FILE || path.join(os.homedir(), ".hermes", "google_token.json");
+const DRIVE_FILES_URL = "https://www.googleapis.com/drive/v3/files";
+const DRIVE_FIELDS = "id,name,mimeType,modifiedTime,parents,webViewLink";
 const BRIEF_HOUR = Number(process.env.BRIEF_HOUR || 8);   // local hour to auto-generate the daily brief
 const BRIEF_PROMPT =
   "You are the operator's chief of staff. Produce today's brief. Read your memory wiki open-loops " +
@@ -84,7 +94,7 @@ async function mirrorKanban() {
     const out = await hermes(["kanban", "--board", BOARD, "list", "--json"], { timeout: 15000 });
     const parsed = JSON.parse(out || "[]");
     tasks = Array.isArray(parsed) ? parsed : parsed.tasks || [];
-  } catch (e) { log("kanban list failed:", e.message.split("\n")[0]); return; }
+  } catch (e) { log("kanban list failed:", formatProcessError(e)); return; }
 
   const seen = new Set();
   for (const t of tasks) {
@@ -115,7 +125,7 @@ async function mirrorCrons() {
     const out = await hermes(["cron", "list", "--all"], { timeout: 15000 });
     const lines = out.split("\n").map((l) => l.trimEnd()).filter(Boolean);
     await setStore("hermes-crons", { jobs: lines, raw: out.slice(0, 8000), syncedAt: new Date().toISOString() });
-  } catch (e) { log("cron list failed:", e.message.split("\n")[0]); }
+  } catch (e) { log("cron list failed:", formatProcessError(e)); }
 }
 
 async function mirrorCost() {
@@ -135,8 +145,86 @@ async function mirrorHealth() {
     detail = out.slice(0, 4000);
     online = /online|running|connected/i.test(out);
     gateway = /gateway[^\n]*(running|online)/i.test(out) ? "running" : "stopped";
-  } catch (e) { detail = e.message.split("\n")[0]; }
+  } catch (e) { detail = formatProcessError(e); }
   await setStore("hermes-health", { online, gateway, detail, lastSeen: new Date().toISOString() });
+}
+
+/* ─────────────── Drive mirror (curated root only, safe fields only) ─────────────── */
+let cachedDriveToken = null; // { accessToken, expiresAt } — in-memory only, never persisted
+
+async function getDriveAccessToken() {
+  if (cachedDriveToken && cachedDriveToken.expiresAt > Date.now() + 30_000) {
+    return cachedDriveToken.accessToken;
+  }
+  const raw = fs.readFileSync(GOOGLE_TOKEN_FILE, "utf8");
+  const auth = JSON.parse(raw);
+  if (!auth.refresh_token || !auth.client_id || !auth.client_secret) {
+    throw new Error("google_token.json is missing refresh_token/client_id/client_secret");
+  }
+  const res = await fetch(auth.token_uri || "https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: auth.client_id,
+      client_secret: auth.client_secret,
+      refresh_token: auth.refresh_token,
+      grant_type: "refresh_token",
+    }),
+  });
+  if (!res.ok) throw new Error(`drive-token-refresh-failed [${res.status}]`);
+  const data = await res.json();
+  if (!data.access_token) throw new Error("drive-token-refresh-failed: no access_token in response");
+  cachedDriveToken = { accessToken: data.access_token, expiresAt: Date.now() + (data.expires_in ?? 3600) * 1000 };
+  return cachedDriveToken.accessToken;
+}
+
+async function driveFetchFile(accessToken, id) {
+  const url = new URL(`${DRIVE_FILES_URL}/${id}`);
+  url.searchParams.set("fields", DRIVE_FIELDS);
+  url.searchParams.set("supportsAllDrives", "true");
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`drive-get-failed [${res.status}]`);
+  return res.json();
+}
+
+async function driveFetchChildren(accessToken, folderId) {
+  const files = [];
+  let pageToken;
+  do {
+    const url = new URL(DRIVE_FILES_URL);
+    url.searchParams.set("q", `'${folderId}' in parents and trashed = false`);
+    url.searchParams.set("fields", `nextPageToken, files(${DRIVE_FIELDS})`);
+    url.searchParams.set("pageSize", "1000");
+    url.searchParams.set("supportsAllDrives", "true");
+    url.searchParams.set("includeItemsFromAllDrives", "true");
+    if (pageToken) url.searchParams.set("pageToken", pageToken);
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    if (!res.ok) throw new Error(`drive-list-failed [${res.status}]`);
+    const data = await res.json();
+    files.push(...(data.files ?? []));
+    pageToken = data.nextPageToken;
+  } while (pageToken);
+  return files;
+}
+
+async function mirrorDrive() {
+  try {
+    const accessToken = await getDriveAccessToken();
+    const rows = await crawlCuratedDriveTree(DRIVE_ROOT_FOLDER_ID, {
+      fetchFile: (id) => driveFetchFile(accessToken, id),
+      fetchChildren: (folderId) => driveFetchChildren(accessToken, folderId),
+    });
+    if (rows.length === 0) throw new Error("drive-root-not-found");
+    await setStore("hermes-drive", { available: true, rows, syncedAt: new Date().toISOString() });
+  } catch (e) {
+    log("mirrorDrive failed:", formatProcessError(e));
+    const reason =
+      e && e.code === "ENOENT" ? "Google Drive is not connected."
+      : e && e.message === "drive-root-not-found" ? "The curated Drive folder could not be reached."
+      : "Google Drive is temporarily unavailable.";
+    await setStore("hermes-drive", { available: false, reason, syncedAt: new Date().toISOString() });
+  }
 }
 
 /* ─────────────── Memory Wiki (warm tier: git-tracked markdown) ─────────────── */
@@ -231,7 +319,7 @@ async function maybeDailyBrief() {
   const today = now.toISOString().slice(0, 10);
   if (now.getHours() >= BRIEF_HOUR && lastBriefDate !== today) {
     lastBriefDate = today;
-    try { await generateBriefing(); } catch (e) { log("daily brief err", e.message); }
+    try { await generateBriefing(); } catch (e) { log("daily brief err", formatProcessError(e)); }
   }
 }
 
@@ -264,7 +352,7 @@ async function runRequest(r) {
       [r.id, result.slice(0, 8000)]);
     await emit("run", `Done: ${r.title}`, { level: "up", detail: result.slice(0, 400), meta: { requestId: r.id } });
   } catch (e) {
-    const msg = (e.stderr || e.message || "error").toString().split("\n")[0].slice(0, 600);
+    const msg = formatProcessError(e);
     await q(`UPDATE "AgentRequest" SET status='failed', error=$2, "finishedAt"=now(), "updatedAt"=now() WHERE id=$1`, [r.id, msg]);
     await emit("run", `Failed: ${r.title}`, { level: "down", detail: msg, meta: { requestId: r.id } });
     log("request failed:", r.id, msg);
@@ -285,6 +373,7 @@ async function mirrorTick() {
   try { await mirrorKanban(); } catch (e) { log("mirrorKanban err", e.message); }
   try { await mirrorCrons(); } catch (e) { log("mirrorCrons err", e.message); }
   try { await mirrorHealth(); } catch (e) { log("mirrorHealth err", e.message); }
+  try { await mirrorDrive(); } catch (e) { log("mirrorDrive err", e.message); }
   try { await mirrorWiki(); } catch (e) { log("mirrorWiki err", e.message); }
   try { await mirrorCost(); } catch (e) { log("mirrorCost err", e.message); }
   try { await maybeDailyBrief(); } catch (e) { log("maybeDailyBrief err", e.message); }

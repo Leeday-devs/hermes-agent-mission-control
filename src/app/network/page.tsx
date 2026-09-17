@@ -13,6 +13,7 @@ interface NetworkHealth {
   totalEdges: number;
   orphanedNodes: number;
   generatedAt: string;
+  drive: { available: boolean; reason?: string };
 }
 
 function timeAgo(iso: string | null): string {

@@ -8,6 +8,7 @@ export const NODE_TYPES: NetworkNodeType[] = [
   "agent",
   "event",
   "request",
+  "drive",
 ];
 
 export const NODE_TYPE_COLOR_VAR: Record<NetworkNodeType, string> = {
@@ -18,6 +19,7 @@ export const NODE_TYPE_COLOR_VAR: Record<NetworkNodeType, string> = {
   client: "--net-client",
   event: "--net-event",
   request: "--net-request",
+  drive: "--net-drive",
 };
 
 export const NODE_TYPE_LABEL: Record<NetworkNodeType, string> = {
@@ -28,13 +30,15 @@ export const NODE_TYPE_LABEL: Record<NetworkNodeType, string> = {
   agent: "Agent",
   event: "Agent Event",
   request: "Agent Request",
+  drive: "Google Drive",
 };
 
 // Where "available actions" in the inspector should navigate — the
 // closest existing page for that record's source table. There is no
 // dedicated per-item page for these yet, so this links to the relevant
-// section rather than inventing a destination.
-export const NODE_TYPE_LINK: Record<NetworkNodeType, string> = {
+// section rather than inventing a destination. Drive nodes have no
+// entry here — their inspector action opens node.webViewLink instead.
+export const NODE_TYPE_LINK: Partial<Record<NetworkNodeType, string>> = {
   memory: "/hermes",
   task: "/hermes",
   agent: "/hermes",
@@ -44,7 +48,7 @@ export const NODE_TYPE_LINK: Record<NetworkNodeType, string> = {
   client: "/clients",
 };
 
-export const NODE_TYPE_LINK_LABEL: Record<NetworkNodeType, string> = {
+export const NODE_TYPE_LINK_LABEL: Partial<Record<NetworkNodeType, string>> = {
   memory: "Open Hermes",
   task: "Open Hermes",
   agent: "Open Hermes",

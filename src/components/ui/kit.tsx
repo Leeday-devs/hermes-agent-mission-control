@@ -148,6 +148,8 @@ export function Button({
   size = "md",
   onClick,
   href,
+  target,
+  rel,
   type = "button",
   disabled,
   className = "",
@@ -157,6 +159,8 @@ export function Button({
   size?: "sm" | "md";
   onClick?: () => void;
   href?: string;
+  target?: string;
+  rel?: string;
   type?: "button" | "submit";
   disabled?: boolean;
   className?: string;
@@ -165,7 +169,7 @@ export function Button({
   const cls = `inline-flex items-center justify-center gap-1.5 font-medium ${pad} ${
     variant === "primary" ? "btn-primary" : "btn-ghost"
   } ${disabled ? "opacity-40 pointer-events-none" : ""} ${className}`;
-  if (href) return <a href={href} className={cls}>{children}</a>;
+  if (href) return <a href={href} target={target} rel={rel} className={cls}>{children}</a>;
   return (
     <button type={type} onClick={onClick} disabled={disabled} className={cls}>
       {children}
