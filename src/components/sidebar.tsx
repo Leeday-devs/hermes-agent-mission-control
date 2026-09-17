@@ -8,6 +8,7 @@ import {
   Lightbulb,
   ClipboardList,
   Cpu,
+  Activity,
   Share2,
   Menu,
   X,
@@ -19,6 +20,7 @@ const navGroups = [
     items: [
       { href: "/", label: "Dashboard", icon: Home },
       { href: "/hermes", label: "Hermes", icon: Cpu },
+      { href: "/mission-control", label: "Mission Control", icon: Activity },
       { href: "/network", label: "Network", icon: Share2 },
       { href: "/ideas", label: "Ideas", icon: Lightbulb },
       { href: "/clients", label: "Clients", icon: ClipboardList },
@@ -30,6 +32,7 @@ const navGroups = [
 const mobileTabsRaw = [
   { href: "/", label: "Dashboard", icon: Home },
   { href: "/hermes", label: "Hermes", icon: Cpu },
+  { href: "/mission-control", label: "Control", icon: Activity },
   { href: "/network", label: "Network", icon: Share2 },
   { href: "/ideas", label: "Ideas", icon: Lightbulb },
   { href: "/clients", label: "Clients", icon: ClipboardList },
@@ -38,6 +41,7 @@ const mobileTabsRaw = [
 export function Sidebar() {
   const pathname = usePathname();
   const [isOpen, setIsOpen] = useState(false);
+  const [systemState, setSystemState] = useState("Checking system state");
 
   // Close sidebar on route change (mobile)
   useEffect(() => {
@@ -52,6 +56,17 @@ export function Sidebar() {
     };
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    fetch("/api/hermes/health", { cache: "no-store" })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((health: { online?: boolean; detail?: string } | null) => {
+        if (active) setSystemState(health?.online ? "Bridge heartbeat current" : health?.detail || "System state unavailable");
+      })
+      .catch(() => { if (active) setSystemState("System state unavailable"); });
+    return () => { active = false; };
   }, []);
 
   const Logo = () => (
@@ -195,7 +210,7 @@ export function Sidebar() {
               <span className="absolute inline-flex h-full w-full rounded-full bg-[var(--up)] opacity-60 animate-ping" />
               <span className="relative inline-flex w-1.5 h-1.5 rounded-full bg-[var(--up)]" />
             </span>
-            <span>All systems online</span>
+            <span>{systemState}</span>
           </div>
         </div>
       </aside>

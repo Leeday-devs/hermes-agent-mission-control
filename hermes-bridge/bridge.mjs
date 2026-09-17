@@ -17,6 +17,8 @@
  *               BRIDGE_MIRROR_MS (30000), HERMES_BIN (default "hermes").
  */
 import pg from "pg";
+import { redact } from "./lib/operational.mjs";
+import { recordSync, runWatchdog } from "./lib/watchdog.mjs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
@@ -74,7 +76,7 @@ async function emit(kind, title, { detail = null, agent = "hermes", level = "inf
   await q(
     `INSERT INTO "AgentEvent" (id, kind, title, detail, agent, level, meta, "createdAt")
      VALUES ($1,$2,$3,$4,$5,$6,$7, now())`,
-    [randomUUID(), kind, title.slice(0, 200), detail, agent, level, meta ? JSON.stringify(meta) : null]
+    [randomUUID(), kind, redact(title).slice(0, 200), detail ? redact(detail) : null, agent, level, meta ? JSON.stringify(meta) : null]
   );
 }
 
@@ -94,7 +96,7 @@ async function mirrorKanban() {
     const out = await hermes(["kanban", "--board", BOARD, "list", "--json"], { timeout: 15000 });
     const parsed = JSON.parse(out || "[]");
     tasks = Array.isArray(parsed) ? parsed : parsed.tasks || [];
-  } catch (e) { log("kanban list failed:", formatProcessError(e)); return; }
+  } catch (e) { throw e; }
 
   const seen = new Set();
   for (const t of tasks) {
@@ -118,6 +120,7 @@ async function mirrorKanban() {
   } else {
     await q(`DELETE FROM "HermesTask" WHERE board=$1`, [BOARD]);
   }
+  return seen.size;
 }
 
 async function mirrorCrons() {
@@ -125,7 +128,7 @@ async function mirrorCrons() {
     const out = await hermes(["cron", "list", "--all"], { timeout: 15000 });
     const lines = out.split("\n").map((l) => l.trimEnd()).filter(Boolean);
     await setStore("hermes-crons", { jobs: lines, raw: out.slice(0, 8000), syncedAt: new Date().toISOString() });
-  } catch (e) { log("cron list failed:", formatProcessError(e)); }
+  } catch (e) { throw e; }
 }
 
 async function mirrorCost() {
@@ -136,17 +139,12 @@ async function mirrorCost() {
       return;
     } catch { /* try next arg shape */ }
   }
+  throw new Error("Cost sync unavailable");
 }
 
 async function mirrorHealth() {
-  let online = false, gateway = "unknown", detail = "";
-  try {
-    const out = await hermes(["status"], { timeout: 12000 });
-    detail = out.slice(0, 4000);
-    online = /online|running|connected/i.test(out);
-    gateway = /gateway[^\n]*(running|online)/i.test(out) ? "running" : "stopped";
-  } catch (e) { detail = formatProcessError(e); }
-  await setStore("hermes-health", { online, gateway, detail, lastSeen: new Date().toISOString() });
+  // A database round-trip heartbeat verifies the bridge loop, not gateway/model health.
+  await q('SELECT 1');
 }
 
 /* ─────────────── Drive mirror (curated root only, safe fields only) ─────────────── */
@@ -217,13 +215,15 @@ async function mirrorDrive() {
     });
     if (rows.length === 0) throw new Error("drive-root-not-found");
     await setStore("hermes-drive", { available: true, rows, syncedAt: new Date().toISOString() });
+    return rows.length;
   } catch (e) {
     log("mirrorDrive failed:", formatProcessError(e));
     const reason =
       e && e.code === "ENOENT" ? "Google Drive is not connected."
       : e && e.message === "drive-root-not-found" ? "The curated Drive folder could not be reached."
       : "Google Drive is temporarily unavailable.";
-    await setStore("hermes-drive", { available: false, reason, syncedAt: new Date().toISOString() });
+    await setStore("hermes-drive", { available: false, reason });
+    throw new Error(reason);
   }
 }
 
@@ -254,13 +254,13 @@ function walkMd(dir, out = []) {
   return out;
 }
 async function mirrorWiki() {
-  if (!fs.existsSync(WIKI_DIR)) return;
+  if (!fs.existsSync(WIKI_DIR)) throw new Error("Wiki directory unavailable");
   const seen = new Set();
   for (const file of walkMd(WIKI_DIR)) {
     const rel = path.relative(WIKI_DIR, file);
     const id = rel.replace(/\.md$/, "");
     seen.add(id);
-    let raw = ""; try { raw = fs.readFileSync(file, "utf8"); } catch { continue; }
+    let raw = ""; try { raw = fs.readFileSync(file, "utf8"); } catch { throw new Error("Wiki file unreadable"); }
     const { fm, body } = parseEntry(raw);
     await q(
       `INSERT INTO "HermesMemory" (id, path, type, title, status, confidence, provenance, tags, links, body, "validFrom", "validTo", "updatedAt", "syncedAt")
@@ -276,6 +276,7 @@ async function mirrorWiki() {
   }
   if (seen.size) await q(`DELETE FROM "HermesMemory" WHERE id <> ALL($1::text[])`, [[...seen]]);
   else await q(`DELETE FROM "HermesMemory"`);
+  return seen.size;
 }
 function writeWikiEntry(e) {
   const rel = e.path || `${e.type || "note"}s/${e.id}.md`;
@@ -362,28 +363,57 @@ async function runRequest(r) {
 async function processQueue() {
   // Never select awaiting_approval rows — only human-approved or
   // never-needed-approval work reaches the hermes CLI.
-  const { rows } = await q(
-    `SELECT * FROM "AgentRequest" WHERE status IN ('queued','approved') ORDER BY "createdAt" ASC LIMIT 3`
-  );
+  const client = await pool.connect();
+  let rows;
+  try {
+    await client.query('BEGIN');
+    ({ rows } = await client.query(`SELECT * FROM "AgentRequest" WHERE status IN ('queued','approved') ORDER BY "createdAt" ASC FOR UPDATE SKIP LOCKED LIMIT 3`));
+    for (const r of rows) await client.query(`UPDATE "AgentRequest" SET status='running', "startedAt"=now(), "updatedAt"=now() WHERE id=$1`, [r.id]);
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
   for (const r of rows) await runRequest(r);
 }
 
 /* ─────────────── loops ─────────────── */
+async function getStore(key) {
+  const { rows } = await q('SELECT data FROM "DataStore" WHERE key=$1', [key]);
+  return rows[0]?.data ?? null;
+}
+async function claimWatchdog(id, state) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`mc-watchdog:${id}`]);
+    const { rows } = await client.query('SELECT data FROM "DataStore" WHERE key=$1', [`mc-watchdog:${id}`]);
+    const previous = rows[0]?.data ?? null;
+    if (previous?.state === state) { await client.query('COMMIT'); return undefined; }
+    await client.query(`INSERT INTO "DataStore" (key,data,"updatedAt") VALUES ($1,$2,now())
+      ON CONFLICT (key) DO UPDATE SET data=EXCLUDED.data,"updatedAt"=now()`, [`mc-watchdog:${id}`, JSON.stringify({ state })]);
+    await client.query('COMMIT');
+    return previous;
+  } catch (error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
+}
+const watchdogIO = { get: getStore, claim: claimWatchdog, emit };
 async function mirrorTick() {
-  try { await mirrorKanban(); } catch (e) { log("mirrorKanban err", e.message); }
-  try { await mirrorCrons(); } catch (e) { log("mirrorCrons err", e.message); }
-  try { await mirrorHealth(); } catch (e) { log("mirrorHealth err", e.message); }
-  try { await mirrorDrive(); } catch (e) { log("mirrorDrive err", e.message); }
-  try { await mirrorWiki(); } catch (e) { log("mirrorWiki err", e.message); }
-  try { await mirrorCost(); } catch (e) { log("mirrorCost err", e.message); }
-  try { await maybeDailyBrief(); } catch (e) { log("maybeDailyBrief err", e.message); }
+  await runWatchdog(watchdogIO);
+  const io = { get: getStore, put: setStore, emit };
+  for (const [id, operation] of [['kanban', mirrorKanban], ['crons', mirrorCrons], ['drive', mirrorDrive], ['wiki', mirrorWiki], ['cost', mirrorCost], ['bridge', mirrorHealth]]) {
+    await recordSync(id, operation, io);
+  }
+  await runWatchdog(watchdogIO);
+  await q(`DELETE FROM "AgentEvent" WHERE "createdAt" < now() - interval '30 days'
+    OR id IN (SELECT id FROM "AgentEvent" ORDER BY "createdAt" DESC OFFSET 2000)`);
+  // Existing briefing generation stays separate from source health.
+  try { await maybeDailyBrief(); } catch (e) { log("brief unavailable", formatProcessError(e)); }
 }
 
 async function main() {
   log(`hermes-bridge up · hermes-cli=${HERMES_CLI_VERSION} · board=${BOARD} · poll=${POLL_MS}ms · mirror=${MIRROR_MS}ms`);
   await emit("status", "Bridge connected", { level: "up" });
   await mirrorTick();
-  setInterval(() => mirrorTick().catch((e) => log("mirror loop", e.message)), MIRROR_MS);
+  const mirrorLoop = async () => { try { await mirrorTick(); } catch { log("mirror loop unavailable"); } finally { setTimeout(mirrorLoop, MIRROR_MS); } };
+  setTimeout(mirrorLoop, MIRROR_MS);
   // queue loop
   const tick = async () => { try { await processQueue(); } catch (e) { log("queue loop", e.message); } finally { setTimeout(tick, POLL_MS); } };
   tick();
