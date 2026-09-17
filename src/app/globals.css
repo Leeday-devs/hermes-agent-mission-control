@@ -214,6 +214,16 @@ textarea, input {
   --hq-warn: var(--warn);
   --hq-elev-1: rgba(255, 255, 255, 0.02);
   --hq-elev-2: rgba(255, 255, 255, 0.04);
+
+  /* Network graph — one desaturated jewel tone per node type,
+     built from the existing semantic palette (never a new brand color). */
+  --net-memory:  var(--accent);
+  --net-task:    var(--up);
+  --net-idea:    var(--warn);
+  --net-agent:   var(--down);
+  --net-client:  #b39ddb;
+  --net-event:   #56d1c9;
+  --net-request: #e2a8d8;
 }
 
 /* tabular/mono numerals — everywhere numbers compare or align */

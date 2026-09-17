@@ -1,43 +1,28 @@
-import type { NextAuthOptions } from 'next-auth'
-import GoogleProvider from 'next-auth/providers/google'
+import NextAuth, { type NextAuthConfig } from 'next-auth'
+import Google from 'next-auth/providers/google'
 
-// Pure JWT auth — no DB adapter required.
-// Users are verified via allowedEmails; session is a signed cookie.
-// TODO: Add PrismaAdapter once DB-backed sessions are needed.
-export const authOptions: NextAuthOptions = {
+const allowedEmails = new Set(
+  (process.env.ALLOWED_EMAILS ?? '')
+    .split(',')
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean),
+)
+
+const config = {
   session: { strategy: 'jwt' },
   providers: [
-    GoogleProvider({
-      clientId: process.env.GOOGLE_CLIENT_ID!,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+    Google({
+      clientId: process.env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
     }),
   ],
   callbacks: {
-    async signIn({ user }) {
-      // Comma-separated allowlist from env, e.g. ALLOWED_EMAILS="you@example.com,teammate@example.com"
-      const allowedEmails = (process.env.ALLOWED_EMAILS ?? '')
-        .split(',')
-        .map((e) => e.trim().toLowerCase())
-        .filter(Boolean)
-      if (allowedEmails.length === 0) return false // lock down by default until configured
-      return allowedEmails.includes((user.email ?? '').toLowerCase())
-    },
-    async jwt({ token, user }) {
-      if (user) {
-        token.id = user.id
-        token.email = user.email
-      }
-      return token
-    },
-    async session({ session, token }) {
-      if (session.user) {
-        session.user.id = token.sub ?? ''
-        session.user.email = token.email as string
-      }
-      return session
+    signIn({ user }) {
+      const email = user.email?.toLowerCase()
+      return Boolean(email && allowedEmails.size > 0 && allowedEmails.has(email))
     },
   },
-  pages: {
-    signIn: '/login',
-  },
-}
+  pages: { signIn: '/login' },
+} satisfies NextAuthConfig
+
+export const { handlers, auth, signIn, signOut } = NextAuth(config)

@@ -23,6 +23,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { HERMES_CLI_VERSION, assertRunnable, buildRunArgs } from "./lib/commands.mjs";
 
 const execFileP = promisify(execFile);
 const HERMES = process.env.HERMES_BIN || "hermes";
@@ -236,40 +237,28 @@ async function maybeDailyBrief() {
 
 /* ─────────────── PUSH: run website requests via Hermes ─────────────── */
 async function runRequest(r) {
+  // Belt-and-suspenders: processQueue() only selects queued/approved rows,
+  // but never trust that alone — refuse anything still awaiting_approval.
+  assertRunnable(r);
   await q(`UPDATE "AgentRequest" SET status='running', "startedAt"=now(), "updatedAt"=now() WHERE id=$1`, [r.id]);
   await emit("run", `Started: ${r.title}`, { level: "info", meta: { requestId: r.id, kind: r.kind } });
   try {
     let result = "";
-    if (r.kind === "oneshot" || r.kind === "chat") {
-      result = (await hermes(["-z", r.prompt || r.title], { timeout: RUN_TIMEOUT_MS })).trim();
-    } else if (r.kind === "kanban") {
-      result = (await hermes(["kanban", "--board", BOARD, "create", "--json", r.title], { timeout: 20000 })).trim();
-    } else if (r.kind.startsWith("cron.")) {
-      const op = r.kind.split(".")[1];
-      const a = JSON.parse(r.prompt || "{}");
-      const argv =
-        op === "create" ? ["cron", "create", a.schedule, a.prompt || a.name].filter(Boolean)
-        : op === "run"    ? ["cron", "run", a.id || a.name]
-        : op === "pause"  ? ["cron", "pause", a.id || a.name]
-        : op === "resume" ? ["cron", "resume", a.id || a.name]
-        : op === "remove" ? ["cron", "remove", a.id || a.name]
-        : op === "edit"   ? ["cron", "edit", a.id || a.name]
-        : null;
-      if (!argv) throw new Error(`unknown cron op ${op}`);
-      result = (await hermes(argv, { timeout: 20000 })).trim();
-      await mirrorCrons();
-    } else if (r.kind === "memory.write") {
+    const plan = buildRunArgs(r, { board: BOARD });
+    if (plan.local === "memory.write") {
       const e = JSON.parse(r.prompt || "{}");
       const rel = writeWikiEntry(e);
       await gitCommitWiki(`wiki: update ${rel} (via dashboard)`);
       await mirrorWiki();
       result = `wrote ${rel}`;
-    } else if (r.kind === "briefing.generate") {
+    } else if (plan.local === "briefing.generate") {
       await generateBriefing();
       lastBriefDate = new Date().toISOString().slice(0, 10);
       result = "brief updated";
     } else {
-      throw new Error(`unknown kind ${r.kind}`);
+      const timeout = r.kind === "oneshot" || r.kind === "chat" ? RUN_TIMEOUT_MS : 20000;
+      result = (await hermes(plan.argv, { timeout })).trim();
+      if (r.kind.startsWith("cron.")) await mirrorCrons();
     }
     await q(`UPDATE "AgentRequest" SET status='done', result=$2, "finishedAt"=now(), "updatedAt"=now() WHERE id=$1`,
       [r.id, result.slice(0, 8000)]);
@@ -283,6 +272,8 @@ async function runRequest(r) {
 }
 
 async function processQueue() {
+  // Never select awaiting_approval rows — only human-approved or
+  // never-needed-approval work reaches the hermes CLI.
   const { rows } = await q(
     `SELECT * FROM "AgentRequest" WHERE status IN ('queued','approved') ORDER BY "createdAt" ASC LIMIT 3`
   );
@@ -300,7 +291,7 @@ async function mirrorTick() {
 }
 
 async function main() {
-  log(`hermes-bridge up · board=${BOARD} · poll=${POLL_MS}ms · mirror=${MIRROR_MS}ms`);
+  log(`hermes-bridge up · hermes-cli=${HERMES_CLI_VERSION} · board=${BOARD} · poll=${POLL_MS}ms · mirror=${MIRROR_MS}ms`);
   await emit("status", "Bridge connected", { level: "up" });
   await mirrorTick();
   setInterval(() => mirrorTick().catch((e) => log("mirror loop", e.message)), MIRROR_MS);

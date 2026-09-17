@@ -43,6 +43,6 @@ website  ◀──read HermesTask/────   Postgres  ◀──mirror──
 | `BRIDGE_RUN_TIMEOUT_MS` | `240000` | max time for one agent run |
 
 ## Notes / assumptions
-- CLI arg shapes (`hermes kanban create <title>`, `hermes cron create <schedule> <prompt>`) are best-effort for Hermes v0.17.x — if your build differs, tweak `runRequest()` in `bridge.mjs`.
+- Targets **Hermes Agent CLI v0.21.3**. CLI arg shapes (`hermes kanban --board X create --json <title>`, `hermes cron create <schedule> <prompt>`) live in `lib/commands.mjs`, the one file to edit if your build's flags differ — it's covered by `lib/commands.test.mjs`.
 - The bridge writes to Postgres with plain SQL, so it doesn't need Prisma.
-- Safe by design: side-effecting work waits for your approval in the website's Approval Inbox before the bridge will touch it.
+- Safe by design, in two layers: `processQueue()` only ever selects `queued`/`approved` rows from Postgres, and `runRequest()` re-checks with `assertRunnable()` before touching the CLI — a request still `awaiting_approval` can never execute.

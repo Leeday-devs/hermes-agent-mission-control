@@ -5,17 +5,10 @@ import { usePathname } from "next/navigation";
 import { useState, useEffect } from "react";
 import {
   Home,
-  Twitter,
-  Play,
-  Bot,
   Lightbulb,
-  Flower2,
-  FileText,
   ClipboardList,
-  HeartPulse,
   Cpu,
-  BookOpen,
-  Workflow,
+  Share2,
   Menu,
   X,
 } from "lucide-react";
@@ -26,42 +19,20 @@ const navGroups = [
     items: [
       { href: "/", label: "Dashboard", icon: Home },
       { href: "/hermes", label: "Hermes", icon: Cpu },
-      { href: "/tasks", label: "Tasks", icon: ClipboardList },
-    ],
-  },
-  {
-    name: "Content",
-    items: [
-      { href: "/x", label: "X", icon: Twitter },
-      { href: "/content-os", label: "Pipeline", icon: Workflow },
-      { href: "/articles", label: "Articles", icon: FileText },
-      { href: "/youtube", label: "YouTube", icon: Play },
-    ],
-  },
-  {
-    name: "Data",
-    items: [
-      { href: "/client-pulse", label: "Client Pulse", icon: HeartPulse },
-    ],
-  },
-  {
-    name: "System",
-    items: [
-      { href: "/agents", label: "Agents", icon: Bot },
-      { href: "/memory-wiki", label: "Memory Wiki", icon: BookOpen },
+      { href: "/network", label: "Network", icon: Share2 },
       { href: "/ideas", label: "Ideas", icon: Lightbulb },
-      { href: "/garden", label: "Garden", icon: Flower2 },
+      { href: "/clients", label: "Clients", icon: ClipboardList },
     ],
   },
 ];
 
-// Mobile tab bar - only show the 5 most important
+// Mobile tab bar
 const mobileTabsRaw = [
   { href: "/", label: "Dashboard", icon: Home },
-  { href: "/x", label: "X", icon: Twitter },
-  { href: "/youtube", label: "YouTube", icon: Play },
+  { href: "/hermes", label: "Hermes", icon: Cpu },
+  { href: "/network", label: "Network", icon: Share2 },
   { href: "/ideas", label: "Ideas", icon: Lightbulb },
-  { href: "/agents", label: "Agents", icon: Bot },
+  { href: "/clients", label: "Clients", icon: ClipboardList },
 ];
 
 export function Sidebar() {
@@ -86,9 +57,9 @@ export function Sidebar() {
   const Logo = () => (
     <div className="flex items-center gap-2.5">
       <div className="w-8 h-8 rounded-[10px] bg-[var(--text)] flex items-center justify-center shadow-[inset_0_1px_0_rgba(255,255,255,0.4)]">
-        <span className="text-[#0a0b0d] font-bold text-[13px] tracking-tight">H</span>
+        <span className="text-[#0a0b0d] font-bold text-[11px] tracking-tight">LD</span>
       </div>
-      <span className="font-semibold text-[var(--text)] tracking-[-0.01em] text-[15px]">Hermy HQ</span>
+      <span className="font-semibold text-[var(--text)] tracking-[-0.01em] text-[15px]">Leeday Mission Control</span>
     </div>
   );
 
