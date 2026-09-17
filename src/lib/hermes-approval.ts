@@ -23,10 +23,10 @@ export interface ApprovalResult {
 const KNOWN_INTERNAL_KINDS = new Set(["kanban", "memory.write", "briefing.generate"]);
 const KNOWN_PROMPT_KINDS = new Set(["oneshot", "chat"]);
 
-// Verbs that reach outside the system: messaging, publishing, money,
-// scheduling/booking, or destructive operations.
+// Verbs/phrases that reach outside the system: messaging, publishing, money,
+// scheduling/booking, remote backups, or destructive operations.
 const SIDE_EFFECT_KEYWORDS =
-  /\b(send|e-?mail|dm|direct message|post|tweet|publish|deploy|release|delete|remove|destroy|drop\s+table|rm\s+-rf|cancel|refund|charge|pay|purchase|buy|order|invoice|withdraw|transfer|deposit|unsubscribe|schedule|book|sign|merge|push)\b/i;
+  /\b(send|e-?mail|dm|direct message|post|tweet|publish|deploy|release|delete|remove|destroy|drop\s+table|rm\s+-rf|cancel|refund|charge|pay|purchase|buy|order|invoice|withdraw|transfer|deposit|unsubscribe|schedule|book|sign|merge|push|backup|back\s+up|github)\b/i;
 
 export function classifyApproval(input: ApprovalInput): ApprovalResult {
   const kind = (input.kind || "").trim();

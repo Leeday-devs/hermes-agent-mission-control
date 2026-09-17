@@ -29,6 +29,15 @@ test("a caller cannot downgrade a side-effecting prompt by passing sideEffecting
   assert.equal(r.status, "awaiting_approval");
 });
 
+test("backup requests require approval even when phrased without a command verb", () => {
+  const r = classifyApproval({
+    kind: "oneshot",
+    title: "Back yourself up privately to GitHub every day at 6am and confirm it in the daily brief",
+  });
+  assert.equal(r.sideEffecting, true);
+  assert.equal(r.status, "awaiting_approval");
+});
+
 test("a caller can escalate a safe-looking prompt by passing sideEffecting: true", () => {
   const r = classifyApproval({ kind: "oneshot", title: "Do the thing we discussed", requestedSideEffecting: true });
   assert.equal(r.sideEffecting, true);
