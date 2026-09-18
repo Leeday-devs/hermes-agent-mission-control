@@ -46,6 +46,10 @@ export async function GET() {
       prisma.agentRequest.count({ where: { status: "awaiting_approval" } }),
     ]);
 
+  if ([tasksResult, ideasPendingResult, recentIdeasResult, clientProjectsResult, pendingApprovalsResult].some((result) => result.status === "rejected")) {
+    return NextResponse.json({ error: "Home data is temporarily unavailable" }, { status: 503, headers: { "Cache-Control": "no-store, no-cache" } });
+  }
+
   const tasks = tasksResult.status === "fulfilled" ? tasksResult.value : [];
   const hermesKanban = formatHermesKanban(tasks);
 

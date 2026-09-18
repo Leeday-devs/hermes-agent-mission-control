@@ -55,7 +55,7 @@ function Empty({ children }: { children: React.ReactNode }) {
 }
 
 // ── Stat strip ────────────────────────────────────────────
-function StatCard({ label, value, href, tone }: { label: string; value: number; href: string; tone?: "warn" | "accent" }) {
+function StatCard({ label, value, href, tone }: { label: string; value: number | string; href: string; tone?: "warn" | "accent" }) {
   const color = tone === "warn" ? "var(--hq-warn)" : tone === "accent" ? "var(--accent)" : "var(--hq-text)";
   return (
     <a href={href} className="panel panel-interactive flex flex-col p-6">
@@ -193,6 +193,8 @@ export default function Dashboard() {
   const [data, setData] = useState<HomeData>(EMPTY);
   const [time, setTime] = useState(new Date());
   const [mounted, setMounted] = useState(false);
+  const [dataState, setDataState] = useState<"loading" | "ready" | "error">("loading");
+  const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
 
   useEffect(() => { setMounted(true); }, []);
   useEffect(() => {
@@ -200,9 +202,19 @@ export default function Dashboard() {
     return () => clearInterval(t);
   }, []);
   useEffect(() => {
-    const load = () => fetch("/api/home").then(r => r.ok ? r.json() : null).then(d => { if (d) setData(d); }).catch(() => {});
-    load();
-    const iv = setInterval(load, 60_000);
+    const load = async () => {
+      try {
+        const response = await fetch("/api/home", { cache: "no-store" });
+        if (!response.ok) throw new Error("Home data unavailable");
+        setData(await response.json());
+        setUpdatedAt(new Date());
+        setDataState("ready");
+      } catch {
+        setDataState("error");
+      }
+    };
+    void load();
+    const iv = setInterval(() => void load(), 60_000);
     return () => clearInterval(iv);
   }, []);
 
@@ -224,33 +236,28 @@ export default function Dashboard() {
           </p>
         </div>
         <div className="flex items-center gap-1.5 rounded-full border border-[var(--hq-hairline)] bg-white/[0.02] px-2.5 py-1">
-          <span className="relative flex w-1.5 h-1.5">
-            <span className="absolute inline-flex h-full w-full rounded-full animate-ping" style={{ background: "color-mix(in srgb, var(--up) 60%, transparent)" }} />
-            <span className="relative inline-flex w-1.5 h-1.5 rounded-full" style={{ background: "var(--up)" }} />
-          </span>
-          <span className="eyebrow !text-[9.5px] !text-[var(--hq-text-faint)]">Live</span>
+          <span className="inline-flex w-1.5 h-1.5 rounded-full" style={{ background: dataState === "ready" ? "var(--up)" : dataState === "error" ? "var(--down)" : "var(--hq-warn)" }} />
+          <span className="eyebrow !text-[9.5px] !text-[var(--hq-text-faint)]">{dataState === "ready" ? `Synced ${updatedAt ? "just now" : ""}` : dataState === "error" ? "Data unavailable" : "Loading data"}</span>
         </div>
       </div>
 
       {/* ── Stat strip ─────────────────────────────────── */}
       <div className="hq-rise grid grid-cols-1 sm:grid-cols-3 gap-5" style={rise(1)}>
-        <StatCard label="Awaiting approval" value={data.pendingApprovals} href="/hermes" tone="warn" />
-        <StatCard label="Open ideas" value={data.ideas.pending} href="/ideas" tone="accent" />
-        <StatCard label="Client projects" value={data.clients.total} href="/clients" />
+        <StatCard label="Awaiting approval" value={dataState === "ready" ? data.pendingApprovals : "—"} href="/hermes" tone="warn" />
+        <StatCard label="Open ideas" value={dataState === "ready" ? data.ideas.pending : "—"} href="/ideas" tone="accent" />
+        <StatCard label="Client projects" value={dataState === "ready" ? data.clients.total : "—"} href="/clients" />
       </div>
 
-      {/* ── Brief + Approval inbox ─────────────────────── */}
-      <div className="mt-5 grid grid-cols-1 xl:grid-cols-3 gap-5 items-start">
-        <div className="xl:col-span-2 hq-rise" style={rise(2)}>
-          <HermesBriefing />
-        </div>
-        <div className="xl:col-span-1 hq-rise" style={rise(3)}>
-          <ApprovalInbox compact />
-        </div>
+      {/* ── Needs your decision ─────────────────────────── */}
+      <div className="mt-5 hq-rise" style={rise(2)}>
+        <ApprovalInbox />
+      </div>
+      <div className="mt-5 hq-rise" style={rise(3)}>
+        <HermesBriefing />
       </div>
 
       {/* ── Signal ──────────────────────────────────────── */}
-      <div className="mt-14">
+      {dataState === "ready" ? <div className="mt-14">
         <SectionLabel>Signal</SectionLabel>
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-5">
           <div className="hq-rise" style={rise(4)}><HermesKanbanPanel kanban={data.hermesKanban} /></div>
@@ -258,7 +265,7 @@ export default function Dashboard() {
           <div className="hq-rise" style={rise(6)}><ClientsPanel clients={data.clients} /></div>
           <div className="hq-rise" style={rise(7)}><NetworkPreviewCard /></div>
         </div>
-      </div>
+      </div> : <div className="mt-8 panel p-5 text-[13px] text-[var(--hq-text-dim)]" role="alert">Operational summaries are unavailable until the dashboard reconnects. Approval decisions remain available above.</div>}
     </div>
   );
 }

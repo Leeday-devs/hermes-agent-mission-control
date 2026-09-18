@@ -45,16 +45,6 @@ function timeAgo(d: string | null): string {
   return `${days}d ago`;
 }
 
-async function getJSON<T>(url: string): Promise<T | null> {
-  try {
-    const r = await fetch(url);
-    if (!r.ok) return null;
-    return (await r.json()) as T;
-  } catch {
-    return null;
-  }
-}
-
 // ── Card ──────────────────────────────────────────────────
 function InboxCard({
   req,
@@ -69,20 +59,25 @@ function InboxCard({
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState(req.title);
   const [draftPrompt, setDraftPrompt] = useState(req.prompt ?? "");
+  const [error, setError] = useState<string | null>(null);
 
   const patch = async (body: Record<string, unknown>) => {
     setBusy(true);
+    setError(null);
     try {
-      await fetch(`/api/hermes/requests/${req.id}`, {
+      const response = await fetch(`/api/hermes/requests/${req.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      // optimistic: card fades, parent refetches
+      if (!response.ok) {
+        const data = await response.json().catch(() => null) as { error?: string } | null;
+        throw new Error(data?.error || "The request could not be updated. Try again.");
+      }
       onAction();
-    } catch {
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The request could not be updated. Try again.");
       setBusy(false);
-      setEditing(false);
     }
   };
 
@@ -132,13 +127,12 @@ function InboxCard({
           <>
             <button
               type="button"
-              onClick={() =>
-                patch({
+              onClick={() => patch({
                   action: "edit",
                   title: draftTitle.trim(),
                   prompt: draftPrompt,
-                })
-              }
+                })}
+              disabled={!draftTitle.trim() || busy}
               className="inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[12px] font-semibold transition-colors"
               style={{
                 color: "var(--accent)",
@@ -198,6 +192,7 @@ function InboxCard({
           </>
         )}
       </div>
+      {error && <p role="alert" className="mt-3 text-[12px] text-[var(--down)]">{error}</p>}
     </Panel>
   );
 }
@@ -207,16 +202,21 @@ export function ApprovalInbox({ compact = false }: { compact?: boolean }) {
   const [requests, setRequests] = useState<Req[]>([]);
   const [pending, setPending] = useState(0);
   const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    const data = await getJSON<{ requests: Req[]; pending: number }>(
-      "/api/hermes/requests?status=awaiting_approval&take=50"
-    );
-    if (data) {
+    try {
+      const response = await fetch("/api/hermes/requests?status=awaiting_approval&take=50");
+      if (!response.ok) throw new Error("Approval inbox unavailable");
+      const data = await response.json() as { requests: Req[]; pending: number };
       setRequests(data.requests ?? []);
       setPending(data.pending ?? data.requests?.length ?? 0);
+      setLoadError(null);
+    } catch {
+      setLoadError("Approval inbox is unavailable. Try again shortly.");
+    } finally {
+      setLoaded(true);
     }
-    setLoaded(true);
   }, []);
 
   useEffect(() => {
@@ -248,7 +248,9 @@ export function ApprovalInbox({ compact = false }: { compact?: boolean }) {
         </Pill>
       </div>
 
-      {loaded && requests.length === 0 ? (
+      {loadError ? (
+        <Panel className="p-5"><p role="alert" className="text-[13px] text-[var(--down)]">{loadError}</p><button type="button" onClick={() => void load()} className="btn-ghost mt-3 px-3 py-1.5 text-[12px]">Retry</button></Panel>
+      ) : loaded && requests.length === 0 ? (
         <Panel className="p-2">
           <EmptyState
             icon={<Check className="w-6 h-6" style={{ color: "var(--up)" }} />}
