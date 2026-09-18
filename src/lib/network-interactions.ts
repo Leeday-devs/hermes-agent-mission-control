@@ -4,7 +4,7 @@
 // type, and a deterministic 2D layout for the mobile neighborhood
 // view. No fetching, no inference — only edges that already exist.
 
-import type { NetworkEdge } from "./network-graph";
+import type { NetworkEdge, NetworkNode, NetworkNodeType } from "./network-graph";
 
 export interface DirectNeighbor {
   edge: NetworkEdge;
@@ -94,4 +94,31 @@ export function computeRadialLayout(centerId: string, neighborIds: string[]): Ma
     map.set(id, { x: Math.cos(angle), y: Math.sin(angle) });
   });
   return map;
+}
+
+export interface NetworkCluster {
+  type: NetworkNodeType;
+  nodeIds: string[];
+  explicitEdgeCount: number;
+}
+
+// Overview-level data only. AI suggestions are deliberately excluded so they
+// cannot be mistaken for recorded relationships or change data-health totals.
+export function buildNetworkClusters(nodes: NetworkNode[], edges: NetworkEdge[]): NetworkCluster[] {
+  const groups = new Map<NetworkNodeType, string[]>();
+  for (const node of nodes) {
+    const ids = groups.get(node.type) ?? [];
+    ids.push(node.id);
+    groups.set(node.type, ids);
+  }
+
+  return [...groups.entries()]
+    .map(([type, nodeIds]) => {
+      const memberIds = new Set(nodeIds);
+      const explicitEdgeCount = edges.filter(
+        (edge) => edge.type !== "ai-suggestion" && memberIds.has(edge.source) && memberIds.has(edge.target)
+      ).length;
+      return { type, nodeIds: [...nodeIds].sort(), explicitEdgeCount };
+    })
+    .sort((a, b) => a.type.localeCompare(b.type));
 }

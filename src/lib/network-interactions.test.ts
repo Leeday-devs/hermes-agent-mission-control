@@ -7,8 +7,9 @@ import {
   summarizeRelationships,
   computeFocusStats,
   computeRadialLayout,
+  buildNetworkClusters,
 } from "./network-interactions";
-import type { NetworkEdge } from "./network-graph";
+import type { NetworkEdge, NetworkNode } from "./network-graph";
 
 const edges: NetworkEdge[] = [
   { id: "e1", source: "a", target: "b", type: "link" },
@@ -100,4 +101,22 @@ test("computeRadialLayout dedupes neighbor ids and excludes the center id if pre
 test("computeRadialLayout with no neighbors returns only the center", () => {
   const layout = computeRadialLayout("center", []);
   assert.equal(layout.size, 1);
+});
+
+test("buildNetworkClusters groups visible nodes by type and counts only explicit edges inside each group", () => {
+  const nodes: NetworkNode[] = [
+    { id: "a", type: "memory", label: "A", source: "test", status: null, owner: null, updatedAt: null, orphaned: false },
+    { id: "b", type: "memory", label: "B", source: "test", status: null, owner: null, updatedAt: null, orphaned: false },
+    { id: "c", type: "task", label: "C", source: "test", status: null, owner: null, updatedAt: null, orphaned: false },
+  ];
+  const clusters = buildNetworkClusters(nodes, [
+    { id: "explicit", source: "a", target: "b", type: "memory-link" },
+    { id: "cross-type", source: "a", target: "c", type: "assigned-to" },
+    { id: "suggestion", source: "a", target: "b", type: "ai-suggestion" },
+  ]);
+
+  assert.deepEqual(clusters, [
+    { type: "memory", nodeIds: ["a", "b"], explicitEdgeCount: 1 },
+    { type: "task", nodeIds: ["c"], explicitEdgeCount: 0 },
+  ]);
 });

@@ -142,8 +142,12 @@ export default function NetworkPage() {
 
   const neighborIds = useMemo(() => {
     if (!selectedId) return new Set<string>();
-    return new Set(getDirectNeighbors(edges, selectedId).map((n) => n.neighborId));
-  }, [edges, selectedId]);
+    return new Set(
+      getDirectNeighbors(edges, selectedId)
+        .filter((neighbor) => neighbor.edge.type !== "ai-suggestion" && visibleIds.has(neighbor.neighborId))
+        .map((neighbor) => neighbor.neighborId)
+    );
+  }, [edges, selectedId, visibleIds]);
 
   const toggleType = (t: NetworkNodeType) => {
     setActiveTypes((prev) => {
