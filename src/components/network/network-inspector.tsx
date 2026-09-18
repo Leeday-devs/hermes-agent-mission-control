@@ -3,8 +3,13 @@
 import { useEffect, useRef } from "react";
 import { X, Copy, ExternalLink } from "lucide-react";
 import type { NetworkEdge, NetworkNode } from "@/lib/network-graph";
+import { summarizeRelationships } from "@/lib/network-interactions";
 import { Pill, Button, Eyebrow } from "@/components/ui/kit";
 import { NODE_TYPE_LABEL, NODE_TYPE_LINK, NODE_TYPE_LINK_LABEL } from "./constants";
+
+function relationshipTypeLabel(type: string): string {
+  return type.replace(/-/g, " ");
+}
 
 interface NetworkInspectorProps {
   node: NetworkNode | null;
@@ -40,7 +45,8 @@ export function NetworkInspector({ node, edges, nodesById, onClose, onSelectNode
     );
   }
 
-  const connections = edges.filter((e) => e.source === node.id || e.target === node.id);
+  const relationshipGroups = summarizeRelationships(edges, node.id);
+  const connectionCount = relationshipGroups.reduce((sum, g) => sum + g.count, 0);
   const copyId = () => { navigator.clipboard?.writeText(node.id).catch(() => {}); };
 
   return (
@@ -87,31 +93,44 @@ export function NetworkInspector({ node, edges, nodesById, onClose, onSelectNode
       </dl>
 
       <div className="mt-6">
-        <Eyebrow>Explicit connections ({connections.length})</Eyebrow>
-        {connections.length === 0 ? (
+        <Eyebrow>Explicit connections ({connectionCount})</Eyebrow>
+        {relationshipGroups.length === 0 ? (
           <p className="mt-2 text-[12.5px] text-[var(--text-4)] leading-relaxed">
             No recorded relationships. This is expected — the schema has no explicit link field wiring this record to
             anything else yet.
           </p>
         ) : (
-          <ul className="mt-2 space-y-1">
-            {connections.map((edge) => {
-              const otherId = edge.source === node.id ? edge.target : edge.source;
-              const other = nodesById.get(otherId);
-              if (!other) return null;
-              return (
-                <li key={edge.id}>
-                  <button
-                    onClick={() => onSelectNode(other.id)}
-                    className="w-full text-left flex items-center justify-between gap-2 py-1.5 px-2 rounded-lg hover:bg-[var(--surface-2)] transition-colors"
-                  >
-                    <span className="text-[12.5px] text-[var(--text-2)] truncate">{other.label}</span>
-                    <span className="text-[10.5px] text-[var(--text-4)] shrink-0">{edge.type}</span>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
+          <div className="mt-2 space-y-3">
+            {relationshipGroups.map((group) => (
+              <div key={group.type}>
+                <div className="flex items-center justify-between px-2 mb-1">
+                  <span className="text-[10.5px] font-medium text-[var(--text-3)] capitalize">
+                    {relationshipTypeLabel(group.type)}
+                  </span>
+                  <span className="num text-[10.5px] text-[var(--text-4)]">{group.count}</span>
+                </div>
+                <ul className="space-y-0.5">
+                  {group.neighbors.map(({ edge, neighborId, direction }) => {
+                    const other = nodesById.get(neighborId);
+                    if (!other) return null;
+                    return (
+                      <li key={edge.id}>
+                        <button
+                          onClick={() => onSelectNode(other.id)}
+                          className="w-full text-left flex items-center justify-between gap-2 py-1.5 px-2 rounded-lg hover:bg-[var(--surface-2)] transition-colors"
+                        >
+                          <span className="text-[12.5px] text-[var(--text-2)] truncate">{other.label}</span>
+                          <span className="text-[10.5px] text-[var(--text-4)] shrink-0">
+                            {direction === "outgoing" ? "→" : "←"} {NODE_TYPE_LABEL[other.type]}
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            ))}
+          </div>
         )}
       </div>
 

@@ -10,26 +10,14 @@
    ─────────────────────────────────────────────────────────── */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Crosshair, RotateCcw } from "lucide-react";
 import type { NetworkEdge, NetworkNode, NetworkNodeType } from "@/lib/network-graph";
-import { NODE_TYPE_COLOR_VAR } from "./constants";
+import { fibonacciSphereLayout, generateStarfield, rotationToFace, type Vec3 } from "@/lib/network-sphere";
+import { computeFocusStats } from "@/lib/network-interactions";
+import { NODE_TYPE_COLOR_VAR, NODE_TYPE_LABEL } from "./constants";
 
-type Vec3 = { x: number; y: number; z: number };
-
-function fibonacciSphere(ids: string[]): Map<string, Vec3> {
-  const sorted = [...ids].sort();
-  const n = sorted.length;
-  const map = new Map<string, Vec3>();
-  if (n === 0) return map;
-  const offset = 2 / n;
-  const increment = Math.PI * (3 - Math.sqrt(5));
-  sorted.forEach((id, i) => {
-    const y = i * offset - 1 + offset / 2;
-    const r = Math.sqrt(Math.max(0, 1 - y * y));
-    const phi = i * increment;
-    map.set(id, { x: Math.cos(phi) * r, y, z: Math.sin(phi) * r });
-  });
-  return map;
-}
+const DEFAULT_ROTATION = { y: 0.4, x: -0.3 };
+const STARFIELD = generateStarfield(140, 42);
 
 function rotateY(v: Vec3, a: number): Vec3 {
   const cos = Math.cos(a), sin = Math.sin(a);
@@ -61,7 +49,8 @@ export interface NetworkGlobeProps {
 export function NetworkGlobe({ nodes, edges, visibleIds, selectedId, neighborIds, onSelect }: NetworkGlobeProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const rotation = useRef({ y: 0.4, x: -0.3 });
+  const rotation = useRef({ ...DEFAULT_ROTATION });
+  const focusAnim = useRef<{ fromY: number; fromX: number; toY: number; toX: number; start: number; duration: number } | null>(null);
   const dragging = useRef<{ startX: number; startY: number; rotY: number; rotX: number; moved: boolean } | null>(null);
   const hitPoints = useRef<{ id: string; sx: number; sy: number; r: number }[]>([]);
   const [reducedMotion, setReducedMotion] = useState(false);
@@ -70,7 +59,57 @@ export function NetworkGlobe({ nodes, edges, visibleIds, selectedId, neighborIds
   const nodeIds = useMemo(() => nodes.map((n) => n.id), [nodes]);
   const idsKey = nodeIds.slice().sort().join("|");
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const layout = useMemo(() => fibonacciSphere(nodeIds), [idsKey]);
+  const layout = useMemo(() => fibonacciSphereLayout(nodeIds), [idsKey]);
+
+  const visibleNodes = useMemo(() => nodes.filter((n) => visibleIds.has(n.id)), [nodes, visibleIds]);
+  const visibleEdgeCount = useMemo(
+    () => edges.filter((e) => visibleIds.has(e.source) && visibleIds.has(e.target)).length,
+    [edges, visibleIds]
+  );
+  const orphanCount = useMemo(() => visibleNodes.filter((n) => n.orphaned).length, [visibleNodes]);
+  const legendTypes = useMemo(
+    () => [...new Set(visibleNodes.map((n) => n.type))].sort(),
+    [visibleNodes]
+  );
+  const focusStats = useMemo(
+    () => (selectedId ? computeFocusStats(edges, selectedId) : null),
+    [edges, selectedId]
+  );
+  const selectedNode = useMemo(
+    () => (selectedId ? nodes.find((node) => node.id === selectedId) ?? null : null),
+    [nodes, selectedId]
+  );
+
+  const animateRotationTo = useCallback(
+    (target: { y: number; x: number }) => {
+      focusAnim.current = {
+        fromY: rotation.current.y,
+        fromX: rotation.current.x,
+        toY: target.y,
+        toX: target.x,
+        start: performance.now(),
+        duration: reducedMotion ? 0 : 700,
+      };
+    },
+    [reducedMotion]
+  );
+
+  const focusOnSelected = useCallback(() => {
+    if (!selectedId) return;
+    const pos = layout.get(selectedId);
+    if (!pos) return;
+    animateRotationTo(rotationToFace(pos));
+  }, [selectedId, layout, animateRotationTo]);
+
+  const resetView = useCallback(() => {
+    animateRotationTo(DEFAULT_ROTATION);
+    onSelect(null);
+  }, [animateRotationTo, onSelect]);
+
+  useEffect(() => {
+    if (selectedId) focusOnSelected();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId]);
 
   useEffect(() => {
     const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -137,8 +176,24 @@ export function NetworkGlobe({ nodes, edges, visibleIds, selectedId, neighborIds
 
     let raf = 0;
     const draw = (time: number) => {
-      if (!reducedMotion && !dragging.current) rotation.current.y += 0.0016;
+      if (focusAnim.current) {
+        const { fromY, fromX, toY, toX, start, duration } = focusAnim.current;
+        const t = duration <= 0 ? 1 : Math.min(1, (time - start) / duration);
+        const eased = 1 - Math.pow(1 - t, 3);
+        rotation.current.y = fromY + (toY - fromY) * eased;
+        rotation.current.x = fromX + (toX - fromX) * eased;
+        if (t >= 1) focusAnim.current = null;
+      } else if (!reducedMotion && !dragging.current && !selectedId) {
+        rotation.current.y += 0.0016;
+      }
       ctx.clearRect(0, 0, size.w, size.h);
+
+      for (const star of STARFIELD) {
+        ctx.beginPath();
+        ctx.arc(star.x * size.w, star.y * size.h, star.r, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(255,255,255,${star.a * 0.5})`;
+        ctx.fill();
+      }
 
       const glow = ctx.createRadialGradient(cx, cy, R * 0.1, cx, cy, R * 1.08);
       glow.addColorStop(0, "rgba(110,168,254,0.10)");
@@ -208,6 +263,16 @@ export function NetworkGlobe({ nodes, edges, visibleIds, selectedId, neighborIds
           ctx.strokeStyle = "rgba(255,255,255,0.85)";
           ctx.stroke();
         }
+        if (node.orphaned) {
+          ctx.globalAlpha = dim ? 0.25 : 0.55;
+          ctx.setLineDash([2, 2]);
+          ctx.lineWidth = 1;
+          ctx.strokeStyle = "rgba(255,255,255,0.5)";
+          ctx.beginPath();
+          ctx.arc(sx, sy, baseR + 3.5, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
         ctx.globalAlpha = 1;
         hits.push({ id: node.id, sx, sy, r: Math.max(baseR, 9) });
       }
@@ -246,9 +311,61 @@ export function NetworkGlobe({ nodes, edges, visibleIds, selectedId, neighborIds
         onPointerUp={endDrag}
         onPointerLeave={() => { dragging.current = null; }}
         role="img"
-        aria-label="Interactive 3D network globe. Drag to rotate, click a node to inspect it. Use the node list for keyboard navigation."
+        aria-label="Interactive 3D network globe. Drag to rotate, click a node to inspect it. Use the Focus selected and Reset view buttons, or the node list below, for keyboard access."
         className="w-full h-full cursor-grab active:cursor-grabbing touch-none"
       />
+      <p className="sr-only" aria-live="polite">
+        {selectedNode && focusStats
+          ? `${selectedNode.label} selected. ${focusStats.neighborCount} direct explicit neighbor${focusStats.neighborCount === 1 ? "" : "s"} and ${focusStats.relationshipTypeCount} relationship type${focusStats.relationshipTypeCount === 1 ? "" : "s"}.`
+          : "No network node selected. Use the node list to select a node for details."}
+      </p>
+
+      <div className="pointer-events-none absolute inset-0 flex flex-col justify-between p-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="pointer-events-auto rounded-xl bg-[rgba(10,13,20,0.55)] backdrop-blur-sm border border-[var(--line)] px-3 py-2.5">
+            <div className="flex items-center gap-3 num text-[11px] text-[var(--text-2)]">
+              <span>{visibleNodes.length} nodes</span>
+              <span>{visibleEdgeCount} links</span>
+              <span>{orphanCount} orphaned</span>
+            </div>
+            {focusStats && (
+              <div className="mt-1.5 pt-1.5 border-t border-[var(--line)] text-[11px] text-[var(--text-3)]">
+                Focused: {focusStats.neighborCount} neighbor{focusStats.neighborCount === 1 ? "" : "s"} ·{" "}
+                {focusStats.relationshipTypeCount} relationship type{focusStats.relationshipTypeCount === 1 ? "" : "s"}
+              </div>
+            )}
+          </div>
+          {legendTypes.length > 0 && (
+            <div className="pointer-events-auto flex flex-col items-end gap-1">
+              {legendTypes.map((t) => (
+                <span key={t} className="flex items-center gap-1.5 text-[10.5px] text-[var(--text-3)]">
+                  {NODE_TYPE_LABEL[t]}
+                  <span className="w-1.5 h-1.5 rounded-full" style={{ background: `var(${NODE_TYPE_COLOR_VAR[t]})` }} />
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="pointer-events-auto flex items-center gap-2 self-start">
+          <button
+            type="button"
+            onClick={focusOnSelected}
+            disabled={!selectedId}
+            aria-label="Rotate the globe to face the selected node"
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium bg-[rgba(10,13,20,0.55)] backdrop-blur-sm border border-[var(--line)] text-[var(--text-2)] hover:text-[var(--text)] disabled:opacity-40 disabled:pointer-events-none transition-colors"
+          >
+            <Crosshair className="w-3 h-3" /> Focus selected
+          </button>
+          <button
+            type="button"
+            onClick={resetView}
+            aria-label="Reset globe rotation and clear the selected node"
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium bg-[rgba(10,13,20,0.55)] backdrop-blur-sm border border-[var(--line)] text-[var(--text-2)] hover:text-[var(--text)] transition-colors"
+          >
+            <RotateCcw className="w-3 h-3" /> Reset view
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

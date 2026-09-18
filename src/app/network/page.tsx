@@ -5,7 +5,9 @@ import { RefreshCw, Search, Share2 } from "lucide-react";
 import { Eyebrow, Skeleton, rise } from "@/components/ui/kit";
 import { NetworkGlobe } from "@/components/network/network-globe";
 import { NetworkInspector } from "@/components/network/network-inspector";
+import { NetworkFocusView } from "@/components/network/network-focus-view";
 import { NODE_TYPES, NODE_TYPE_COLOR_VAR, NODE_TYPE_LABEL } from "@/components/network/constants";
+import { getDirectNeighbors } from "@/lib/network-interactions";
 import type { NetworkEdge, NetworkNode, NetworkNodeType } from "@/lib/network-graph";
 
 interface NetworkHealth {
@@ -139,13 +141,8 @@ export default function NetworkPage() {
   const selectedNode = selectedId ? nodesById.get(selectedId) ?? null : null;
 
   const neighborIds = useMemo(() => {
-    const set = new Set<string>();
-    if (!selectedId) return set;
-    for (const e of edges) {
-      if (e.source === selectedId) set.add(e.target);
-      if (e.target === selectedId) set.add(e.source);
-    }
-    return set;
+    if (!selectedId) return new Set<string>();
+    return new Set(getDirectNeighbors(edges, selectedId).map((n) => n.neighborId));
   }, [edges, selectedId]);
 
   const toggleType = (t: NetworkNodeType) => {
@@ -280,6 +277,7 @@ export default function NetworkPage() {
                 onSelect={setSelectedId}
               />
             </div>
+            <NetworkFocusView node={selectedNode} edges={edges} nodesById={nodesById} onSelect={setSelectedId} />
             <NodeListPanel nodes={filtered} selectedId={selectedId} onSelect={setSelectedId} />
           </div>
           <div className="lg:sticky lg:top-6">
