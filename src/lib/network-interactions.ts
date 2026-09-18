@@ -96,6 +96,22 @@ export function computeRadialLayout(centerId: string, neighborIds: string[]): Ma
   return map;
 }
 
+export interface GridPoint {
+  x: number;
+  y: number;
+}
+
+// A deterministic grid prevents a large category (for example Drive) from
+// collapsing hundreds of labels onto one small ring.
+export function computeClusterGridLayout(nodeIds: string[], columns: number): Map<string, GridPoint> {
+  const safeColumns = Math.max(1, Math.floor(columns));
+  const result = new Map<string, GridPoint>();
+  [...new Set(nodeIds)].sort().forEach((id, index) => {
+    result.set(id, { x: index % safeColumns, y: Math.floor(index / safeColumns) });
+  });
+  return result;
+}
+
 export interface NetworkCluster {
   type: NetworkNodeType;
   nodeIds: string[];

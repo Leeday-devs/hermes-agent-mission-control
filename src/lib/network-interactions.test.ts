@@ -7,6 +7,7 @@ import {
   summarizeRelationships,
   computeFocusStats,
   computeRadialLayout,
+  computeClusterGridLayout,
   buildNetworkClusters,
 } from "./network-interactions";
 import type { NetworkEdge, NetworkNode } from "./network-graph";
@@ -118,5 +119,16 @@ test("buildNetworkClusters groups visible nodes by type and counts only explicit
   assert.deepEqual(clusters, [
     { type: "memory", nodeIds: ["a", "b"], explicitEdgeCount: 1 },
     { type: "task", nodeIds: ["c"], explicitEdgeCount: 0 },
+  ]);
+});
+
+test("computeClusterGridLayout gives every record a unique, stable grid cell", () => {
+  const layout = computeClusterGridLayout(["c", "a", "b", "d", "e"], 3);
+  assert.deepEqual([...layout.entries()], [
+    ["a", { x: 0, y: 0 }],
+    ["b", { x: 1, y: 0 }],
+    ["c", { x: 2, y: 0 }],
+    ["d", { x: 0, y: 1 }],
+    ["e", { x: 1, y: 1 }],
   ]);
 });
