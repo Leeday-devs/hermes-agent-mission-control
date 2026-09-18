@@ -7,8 +7,10 @@
    ─────────────────────────────────────────────────────────── */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Sunrise, RefreshCw, ArrowUpRight } from "lucide-react";
 import { Panel, Eyebrow, Button } from "@/components/ui/kit";
+import { buildBriefingMission } from "@/lib/hermes-briefing-mission";
 
 interface Section { label: string; items: string[] }
 interface Briefing {
@@ -41,6 +43,11 @@ export function HermesBriefing() {
   const [pending, setPending] = useState(0);
   const [loaded, setLoaded] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [mission, setMission] = useState<{ section: string; item: string } | null>(null);
+  const [missionError, setMissionError] = useState<string | null>(null);
+  const [startingMission, setStartingMission] = useState(false);
+  const startRef = useRef<HTMLButtonElement>(null);
+  const router = useRouter();
   const genAt = useRef<string | null>(null);
 
   const load = useCallback(async () => {
@@ -69,6 +76,30 @@ export function HermesBriefing() {
     genAt.current = data?.generatedAt ?? null;
     setGenerating(true);
     try { await fetch("/api/hermes/briefing", { method: "POST" }); } catch { /* ignore */ }
+  };
+
+  useEffect(() => {
+    if (mission) startRef.current?.focus();
+  }, [mission]);
+
+  const startMission = async () => {
+    if (!mission || startingMission) return;
+    setStartingMission(true);
+    setMissionError(null);
+    try {
+      const response = await fetch("/api/hermes/dispatch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(buildBriefingMission(mission.section, mission.item)),
+      });
+      if (!response.ok) throw new Error("Mission could not be started.");
+      setMission(null);
+      router.push("/hermes");
+    } catch {
+      setMissionError("Mission could not be started. Check your connection and try again.");
+    } finally {
+      setStartingMission(false);
+    }
   };
 
   const empty = !data || !data.generatedAt || !data.summary;
@@ -125,10 +156,10 @@ export function HermesBriefing() {
                   </div>
                   <div>
                     {s.items.map((item, j) => (
-                      <div key={j} className="flex gap-2.5 py-1.5 border-b border-[var(--line)] last:border-0">
+                      <button type="button" key={j} onClick={() => { setMission({ section: s.label, item }); setMissionError(null); }} className="w-full flex gap-2.5 py-1.5 text-left border-b border-[var(--line)] last:border-0 hover:bg-[var(--surface-2)]">
                         <span className="text-[var(--text-4)] shrink-0 pt-0.5 text-[12px]">·</span>
-                        <p className="flex-1 text-[13px] leading-snug text-[var(--text-2)]">{item}</p>
-                      </div>
+                        <span className="flex-1 text-[13px] leading-snug text-[var(--text-2)]">{item}</span>
+                      </button>
                     ))}
                   </div>
                 </div>
@@ -136,6 +167,21 @@ export function HermesBriefing() {
             </div>
           )}
         </>
+      )}
+      {mission && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 px-4" onMouseDown={(e) => { if (e.target === e.currentTarget) setMission(null); }}>
+          <div role="dialog" aria-modal="true" aria-labelledby="briefing-mission-title" className="elevated w-full max-w-[520px] p-6" onKeyDown={(e) => { if (e.key === "Escape" && !startingMission) setMission(null); }}>
+            <h2 id="briefing-mission-title" className="text-[16px] font-semibold text-[var(--text)]">Start a mission?</h2>
+            <p className="mt-3 text-[12px] uppercase tracking-wide text-[var(--text-3)]">{mission.section}</p>
+            <p className="mt-1 text-[14px] leading-relaxed text-[var(--text-2)]">{mission.item}</p>
+            <p className="mt-4 text-[13px] leading-relaxed text-[var(--text-3)]">Nova will clarify only genuinely necessary choices, then investigate and execute this item. Existing approval gates still apply to live or external actions.</p>
+            {missionError && <p role="alert" className="mt-3 text-[13px] text-[var(--warn)]">{missionError}</p>}
+            <div className="mt-5 flex justify-end gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setMission(null)} disabled={startingMission}>Cancel</Button>
+              <button ref={startRef} type="button" onClick={startMission} disabled={startingMission} className="btn-primary inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-[12px] font-medium">{startingMission ? "Starting…" : "Start mission"}</button>
+            </div>
+          </div>
+        </div>
       )}
     </Panel>
   );
