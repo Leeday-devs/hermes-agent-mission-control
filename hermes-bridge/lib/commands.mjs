@@ -47,6 +47,16 @@ export function claimTransition(row) {
   return { ...row, status: "running", startedAt: new Date().toISOString() };
 }
 
+// A bridge interruption can strand a claimed request. Recovery must never
+// touch queued/approved work or a current execution; it only marks an aged
+// running request terminal so the room and owner UI cannot stay busy forever.
+export function recoverTransition(row, nowMs = Date.now(), maxAgeMs = 10 * 60 * 1000) {
+  if (!row || row.status !== "running") return null;
+  const startedAt = Date.parse(row.startedAt || "");
+  if (!Number.isFinite(startedAt) || nowMs - startedAt < maxAgeMs) return null;
+  return { ...row, status: "failed" };
+}
+
 // Returns { argv } for a `hermes` CLI invocation, or { local: kind } for
 // requests bridge.mjs handles itself (no CLI call). Throws for unknown
 // kinds/ops so a bad request fails loudly instead of running something
@@ -57,6 +67,21 @@ export function buildRunArgs(request, { board } = {}) {
 
   if (kind === "oneshot" || kind === "chat") {
     return { argv: ["-z", request.prompt || request.title] };
+  }
+
+  if (kind === "room.chat") {
+    let room;
+    try { room = JSON.parse(request.prompt || "{}"); } catch { throw new Error("invalid room.chat payload"); }
+    if (!room || typeof room.profile !== "string" || !/^[a-z-]{2,64}$/.test(room.profile)
+      || typeof room.prompt !== "string" || !room.prompt.trim() || room.prompt.length > 4000
+      || typeof room.messageId !== "string" || !/^[A-Za-z0-9_-]{8,128}$/.test(room.messageId)) {
+      throw new Error("invalid room.chat payload");
+    }
+    return {
+      argv: ["-p", room.profile, "chat", "--toolsets", "hermes-webhook", "--continue", `mission-control-${room.profile}`,
+        "--create-if-missing", "--query", room.prompt, "--oneshot", "--quiet", "--run-budget", "120"],
+      room: { profile: room.profile, messageId: room.messageId },
+    };
   }
 
   if (kind === "kanban") {

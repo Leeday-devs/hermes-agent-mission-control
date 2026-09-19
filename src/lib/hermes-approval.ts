@@ -21,7 +21,7 @@ export interface ApprovalResult {
 }
 
 const KNOWN_INTERNAL_KINDS = new Set(["kanban", "memory.write", "briefing.generate"]);
-const KNOWN_PROMPT_KINDS = new Set(["oneshot", "chat"]);
+const KNOWN_PROMPT_KINDS = new Set(["oneshot", "chat", "room.chat"]);
 
 // Verbs/phrases that reach outside the system: messaging, publishing, money,
 // scheduling/booking, remote backups, or destructive operations.

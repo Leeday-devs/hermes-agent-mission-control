@@ -49,6 +49,13 @@ test("chat kind is classified the same as oneshot", () => {
   assert.equal(r.sideEffecting, true);
 });
 
+test("room.chat prompts use the same approval boundary as chat", () => {
+  const safe = classifyApproval({ kind: "room.chat", title: "Orchestrator room message", prompt: "Summarize the current status" });
+  assert.equal(safe.status, "queued");
+  const unsafe = classifyApproval({ kind: "room.chat", title: "Orchestrator room message", prompt: "Deploy this change" });
+  assert.equal(unsafe.status, "awaiting_approval");
+});
+
 test("kanban card creation is safe by default", () => {
   const r = classifyApproval({ kind: "kanban", title: "Follow up with client re: hosting renewal" });
   assert.equal(r.sideEffecting, false);

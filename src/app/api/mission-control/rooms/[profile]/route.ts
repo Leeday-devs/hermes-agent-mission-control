@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { prisma } from '@/lib/prisma';
 import { specialist, validateMessage, configuredModel, roomAvailability, type Room, type RoomMessage } from '@/lib/specialists';
+import { classifyApproval } from '@/lib/hermes-approval';
 import { redact } from '../../../../../../hermes-bridge/lib/operational.mjs';
-import { spawnSpecialist } from '@/lib/room-runner';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 type Context = { params: Promise<{ profile: string }> };
@@ -50,6 +50,7 @@ export async function POST(req: Request, ctx: Context) {
   let prompt: string;
   try { const body = await boundedBody(req); prompt = validateMessage(profile, body.prompt); }
   catch { return Response.json({ error: 'A valid JSON message of 1–4000 characters is required (20 KB request limit).' }, { status: 400 }); }
+  const approval = classifyApproval({ kind: 'room.chat', title: `${specialist(profile)!.name} room message`, prompt });
   // Do not persist or execute secrets, including prompts that would be altered by redaction.
   if (redact(prompt) !== prompt) return Response.json({ error: 'Remove credentials from the message before sending.' }, { status: 400 });
   try {
@@ -62,43 +63,22 @@ export async function POST(req: Request, ctx: Context) {
       const staleAt = Date.now() - 10 * 60 * 1000;
       const recovered = room.messages.map(message => message.status === 'running' && Date.parse(message.startedAt ?? message.createdAt) < staleAt
         ? { ...message, status: 'failed', error: 'Recovered stale running room task.', finishedAt: new Date().toISOString() } : message);
-      if (recovered.some(message => message.status === 'running')) return { kind: 'busy' as const };
+      if (recovered.some(message => ['queued', 'awaiting_approval', 'running'].includes(message.status))) return { kind: 'busy' as const };
       const remaining = roomRateLimitRemaining(room.lastSentAt, Date.now());
       if (remaining > 0) return { kind: 'rate-limited' as const, retryAfter: Math.ceil(remaining / 1000) };
       const now = new Date().toISOString();
-      const message: RoomMessage = { id: randomUUID(), label: 'Owner message sent', status: 'running', error: null, result: null, createdAt: now, startedAt: now, finishedAt: null, model: configuredModel(profile) };
+      const message: RoomMessage = { id: randomUUID(), label: 'Owner message sent', status: approval.status, error: null, result: null, createdAt: now, startedAt: null, finishedAt: null, model: configuredModel(profile) };
       const data = { messages: [...recovered, message].slice(-200), lastSentAt: now };
       await tx.dataStore.upsert({ where: { key: `mc-room:${profile}` }, create: { key: `mc-room:${profile}`, data }, update: { data } });
+      const agent = specialist(profile)!;
+      await tx.agentRequest.create({ data: {
+        origin: 'mission-control-room', kind: 'room.chat', title: `${agent.name} room message`,
+        prompt: JSON.stringify({ profile, prompt, messageId: message.id }), sideEffecting: approval.sideEffecting, status: approval.status,
+      } });
       return { kind: 'claimed' as const, data };
     });
     if (outcome.kind === 'busy') return Response.json({ error: 'Room busy: another message is already running.' }, { status: 429, headers: { 'Retry-After': '1' } });
     if (outcome.kind === 'rate-limited') return Response.json({ error: 'Rate limited: wait before sending another room message.' }, { status: 429, headers: { 'Retry-After': String(outcome.retryAfter) } });
-    const message = outcome.data.messages.at(-1)!;
-    try {
-      const execution = await spawnSpecialist(profile, prompt);
-      message.status = 'completed'; message.result = execution.result; message.finishedAt = new Date().toISOString();
-    } catch (error) {
-      message.status = 'failed'; message.error = redact(error instanceof Error ? error.message : 'Hermes execution failed'); message.finishedAt = new Date().toISOString();
-    }
-    let updated: Room | null = null;
-    try {
-      updated = await prisma.$transaction(async tx => {
-        // Re-acquire the same transaction lock and re-read after Hermes finishes: any
-        // concurrent writer is serialized before this replacement, so its messages and
-        // lastSentAt are preserved rather than overwritten by the initial snapshot.
-        const locks = await tx.$queryRaw<{locked: boolean}[]>`SELECT pg_try_advisory_xact_lock(hashtext(${`mc-room:${profile}`})) AS locked`;
-        if (!locks[0]?.locked) throw new Error('room lock unavailable');
-        const row = await tx.dataStore.findUnique({ where: { key: `mc-room:${profile}` } });
-        const current = (row?.data as Room | undefined) ?? { messages: [], lastSentAt: null };
-        if (!current.messages.some(item => item.id === message.id)) throw new Error('room message no longer exists');
-        const data: Room = { ...current, messages: current.messages.map(item => item.id === message.id ? message : item) };
-        await tx.dataStore.update({ where: { key: `mc-room:${profile}` }, data: { data } });
-        return data;
-      });
-    }
-    catch { await prisma.agentEvent.create({ data: { kind: 'room', title: `${profile}: failed`, detail: 'Final room state could not be persisted; task outcome withheld.', agent: profile, level: 'down', meta: { source: 'rooms', state: 'failed', requestId: message.id } } }); return Response.json({ error: 'Room result could not be persisted.' }, { status: 503 }); }
-    await prisma.agentEvent.create({ data: { kind: 'room', title: `${profile}: ${message.status}`, detail: redact(message.error || 'Specialist result persisted.'), agent: profile, level: message.status === 'completed' ? 'info' : 'warn', meta: { source: 'rooms', state: message.status, requestId: message.id } } });
-    await prisma.$executeRaw`DELETE FROM "AgentEvent" WHERE id IN (SELECT id FROM "AgentEvent" ORDER BY "createdAt" DESC OFFSET 2000) OR "createdAt" < NOW() - INTERVAL '30 days'`;
-    return Response.json({ room: { ...updated, messages: updated.messages.map(safeMessage) }, availability: roomAvailability(updated) }, { status: 201 });
+    return Response.json({ room: { ...outcome.data, messages: outcome.data.messages.map(safeMessage) }, availability: roomAvailability(outcome.data) }, { status: 202 });
   } catch { return Response.json({ error: 'Message could not be persisted or executed.' }, { status: 503 }); }
 }

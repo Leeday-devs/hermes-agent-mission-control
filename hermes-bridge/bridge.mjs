@@ -25,7 +25,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { HERMES_CLI_VERSION, assertRunnable, buildRunArgs } from "./lib/commands.mjs";
+import { HERMES_CLI_VERSION, assertRunnable, buildRunArgs, recoverTransition } from "./lib/commands.mjs";
 import { formatProcessError } from "./lib/error-format.mjs";
 import { DRIVE_ROOT_FOLDER_ID, crawlCuratedDriveTree } from "./lib/drive-mirror.mjs";
 
@@ -341,16 +341,36 @@ async function claimRequest(id) {
   return rows[0] ?? null;
 }
 
+async function updateRoomMessage(profile, messageId, patch) {
+  const key = `mc-room:${profile}`;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [key]);
+    const { rows } = await client.query('SELECT data FROM "DataStore" WHERE key=$1', [key]);
+    const room = rows[0]?.data;
+    if (!room || !Array.isArray(room.messages)) throw new Error("room history unavailable");
+    if (!room.messages.some((message) => message?.id === messageId)) throw new Error("room message unavailable");
+    const data = { ...room, messages: room.messages.map((message) => message?.id === messageId ? { ...message, ...patch } : message) };
+    await client.query(`UPDATE "DataStore" SET data=$2, "updatedAt"=now() WHERE key=$1`, [key, JSON.stringify(data)]);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally { client.release(); }
+}
+
 async function runRequest(id) {
   const r = await claimRequest(id);
   if (!r) return; // already claimed/handled elsewhere, or no longer runnable
-  // Belt-and-suspenders: claimRequest() only claims queued/approved rows,
-  // but never trust that alone — refuse anything still awaiting_approval.
-  assertRunnable(r);
-  await emit("run", `Started: ${r.title}`, { level: "info", meta: { requestId: r.id, kind: r.kind } });
   try {
+    // Belt-and-suspenders: claimRequest() only claims queued/approved rows,
+    // but never trust that alone — refuse anything still awaiting_approval.
+    assertRunnable(r);
+    await emit("run", `Started: ${r.title}`, { level: "info", meta: { requestId: r.id, kind: r.kind } });
     let result = "";
     const plan = buildRunArgs(r, { board: BOARD });
+    if (plan.room) await updateRoomMessage(plan.room.profile, plan.room.messageId, { status: "running", startedAt: new Date().toISOString() });
     if (plan.local === "memory.write") {
       const e = JSON.parse(r.prompt || "{}");
       const rel = writeWikiEntry(e);
@@ -366,18 +386,51 @@ async function runRequest(id) {
       result = (await hermes(plan.argv, { timeout })).trim();
       if (r.kind.startsWith("cron.")) await mirrorCrons();
     }
-    await q(`UPDATE "AgentRequest" SET status='done', result=$2, "finishedAt"=now(), "updatedAt"=now() WHERE id=$1`,
-      [r.id, result.slice(0, 8000)]);
+    if (plan.room) result = redact(result);
+    const terminal = await q(`UPDATE "AgentRequest" SET status='done', result=$2, prompt=CASE WHEN kind='room.chat' THEN NULL ELSE prompt END, "finishedAt"=now(), "updatedAt"=now()
+      WHERE id=$1 AND status='running' AND "startedAt"=$3 RETURNING id`, [r.id, result.slice(0, 8000), r.startedAt]);
+    if (!terminal.rows[0]) return; // Stale recovery or another owner already finalized this claim.
+    if (plan.room) await updateRoomMessage(plan.room.profile, plan.room.messageId, { status: "completed", result: result.slice(0, 8000), error: null, finishedAt: new Date().toISOString() });
     await emit("run", `Done: ${r.title}`, { level: "up", detail: result.slice(0, 400), meta: { requestId: r.id } });
   } catch (e) {
-    const msg = formatProcessError(e);
-    await q(`UPDATE "AgentRequest" SET status='failed', error=$2, "finishedAt"=now(), "updatedAt"=now() WHERE id=$1`, [r.id, msg]);
+    const msg = redact(formatProcessError(e));
+    let plan;
+    try { plan = buildRunArgs(r, { board: BOARD }); } catch { /* original error is more useful */ }
+    const terminal = await q(`UPDATE "AgentRequest" SET status='failed', error=$2, prompt=CASE WHEN kind='room.chat' THEN NULL ELSE prompt END, "finishedAt"=now(), "updatedAt"=now()
+      WHERE id=$1 AND status='running' AND "startedAt"=$3 RETURNING id`, [r.id, msg, r.startedAt]);
+    if (!terminal.rows[0]) return;
+    if (plan?.room) {
+      try { await updateRoomMessage(plan.room.profile, plan.room.messageId, { status: "failed", error: msg, finishedAt: new Date().toISOString() }); }
+      catch (roomError) { log("room finalization failed:", formatProcessError(roomError)); }
+    }
     await emit("run", `Failed: ${r.title}`, { level: "down", detail: msg, meta: { requestId: r.id } });
     log("request failed:", r.id, msg);
   }
 }
 
+async function recoverStaleRequests() {
+  const { rows } = await q(`SELECT id, kind, prompt, status, "startedAt" FROM "AgentRequest"
+    WHERE status='running' AND "startedAt" < now() - interval '10 minutes' ORDER BY "startedAt" ASC LIMIT 10`);
+  for (const row of rows) {
+    const recovered = recoverTransition(row);
+    if (!recovered) continue;
+    let plan;
+    try { plan = buildRunArgs(row, { board: BOARD }); } catch { /* recovery still clears the stuck request */ }
+    const message = "Recovered stale running request after bridge interruption.";
+    const claimed = await q(`UPDATE "AgentRequest" SET status='failed', error=$2,
+      prompt=CASE WHEN kind='room.chat' THEN NULL ELSE prompt END, "finishedAt"=now(), "updatedAt"=now()
+      WHERE id=$1 AND status='running' AND "startedAt" < now() - interval '10 minutes' RETURNING id`, [row.id, message]);
+    if (!claimed.rows[0]) continue;
+    if (plan?.room) {
+      try { await updateRoomMessage(plan.room.profile, plan.room.messageId, { status: "failed", error: message, finishedAt: new Date().toISOString() }); }
+      catch (roomError) { log("stale room finalization failed:", formatProcessError(roomError)); }
+    }
+    await emit("run", `Recovered: ${row.id}`, { level: "warn", detail: message, meta: { requestId: row.id, kind: row.kind } });
+  }
+}
+
 async function processQueue() {
+  await recoverStaleRequests();
   // Never select awaiting_approval rows — only human-approved or
   // never-needed-approval work reaches the hermes CLI. The actual
   // queued/approved -> running transition happens atomically per-row in

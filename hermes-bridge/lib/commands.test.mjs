@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assertRunnable, buildRunArgs, claimTransition } from "./commands.mjs";
+import { assertRunnable, buildRunArgs, claimTransition, recoverTransition } from "./commands.mjs";
 
 test("assertRunnable throws for a request still awaiting approval", () => {
   assert.throws(
@@ -45,6 +45,13 @@ test("claim-to-execution: only queued/approved rows can be claimed; everything e
   }
 });
 
+test("recoverTransition fails only a genuinely stale running request", () => {
+  const now = Date.parse("2026-09-19T12:00:00.000Z");
+  assert.equal(recoverTransition({ id: "r1", status: "running", startedAt: "2026-09-19T11:50:00.001Z" }, now), null);
+  assert.deepEqual(recoverTransition({ id: "r1", status: "running", startedAt: "2026-09-19T11:49:59.999Z" }, now), { id: "r1", status: "failed", startedAt: "2026-09-19T11:49:59.999Z" });
+  assert.equal(recoverTransition({ id: "r1", status: "queued", startedAt: "2026-09-19T11:00:00.000Z" }, now), null);
+});
+
 test("buildRunArgs refuses to build a command for an awaiting_approval row", () => {
   assert.throws(
     () => buildRunArgs({ id: "r1", status: "awaiting_approval", kind: "oneshot", title: "do it" }),
@@ -63,6 +70,20 @@ test("buildRunArgs: oneshot uses -z with the prompt, falling back to title", () 
 test("buildRunArgs: chat behaves like oneshot", () => {
   const r = buildRunArgs({ status: "approved", kind: "chat", title: "t", prompt: "hi" });
   assert.deepEqual(r.argv, ["-z", "hi"]);
+});
+
+test("buildRunArgs: room.chat uses the local profile and bounded room session", () => {
+  const r = buildRunArgs({
+    status: "queued",
+    kind: "room.chat",
+    title: "Orchestrator room message",
+    prompt: JSON.stringify({ profile: "orchestrator", prompt: "Reply with exactly OK.", messageId: "550e8400-e29b-41d4-a716-446655440000" }),
+  });
+  assert.deepEqual(r.argv, [
+    "-p", "orchestrator", "chat", "--toolsets", "hermes-webhook", "--continue",
+    "mission-control-orchestrator", "--create-if-missing", "--query", "Reply with exactly OK.",
+    "--oneshot", "--quiet", "--run-budget", "120",
+  ]);
 });
 
 test("buildRunArgs: kanban puts --board before the subcommand", () => {
