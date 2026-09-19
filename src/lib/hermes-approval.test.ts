@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { classifyApproval } from "./hermes-approval";
+import { classifyApproval, isEditableRequestKind } from "./hermes-approval";
 
 test("safe oneshot prompts are queued without approval", () => {
   const r = classifyApproval({ kind: "oneshot", title: "Summarize the last 5 client updates" });
@@ -72,4 +72,28 @@ test("unknown kinds fail closed and require approval", () => {
   const r = classifyApproval({ kind: "something-new", title: "t" });
   assert.equal(r.sideEffecting, true);
   assert.equal(r.status, "awaiting_approval");
+});
+
+test("cron.* requests are immutable at approval — only oneshot/chat/kanban kinds may be edited", () => {
+  for (const op of ["create", "edit", "remove", "pause", "resume", "run"]) {
+    assert.equal(isEditableRequestKind(`cron.${op}`), false, `cron.${op} should not be editable`);
+  }
+  for (const kind of ["oneshot", "chat", "kanban", "memory.write", "briefing.generate"]) {
+    assert.equal(isEditableRequestKind(kind), true, `${kind} should be editable`);
+  }
+});
+
+test("account creation and sign-up requests require approval", () => {
+  for (const title of [
+    "Account creation for Obsidian",
+    "Sign-up for the developer plan",
+    "Create an account for Obsidian",
+    "Create a account for the service",
+    "Sign up for the developer plan",
+    "Register for an account",
+  ]) {
+    const r = classifyApproval({ kind: "oneshot", title });
+    assert.equal(r.sideEffecting, true, `expected side-effecting: ${title}`);
+    assert.equal(r.status, "awaiting_approval");
+  }
 });

@@ -325,11 +325,28 @@ async function maybeDailyBrief() {
 }
 
 /* ─────────────── PUSH: run website requests via Hermes ─────────────── */
-async function runRequest(r) {
-  // Belt-and-suspenders: processQueue() only selects queued/approved rows,
+// Atomically claims a queued/approved row as running. Postgres serializes
+// concurrent UPDATEs to the same row, so this is safe even with multiple
+// bridge processes: only one claimant's UPDATE matches the WHERE clause and
+// gets a RETURNING row back; the rest see 0 rows and skip. The RETURNING
+// row's status genuinely reflects "running" going into
+// assertRunnable()/buildRunArgs() — no reliance on a stale pre-claim copy.
+async function claimRequest(id) {
+  const { rows } = await q(
+    `UPDATE "AgentRequest" SET status='running', "startedAt"=now(), "updatedAt"=now()
+     WHERE id=$1 AND status IN ('queued','approved')
+     RETURNING *`,
+    [id]
+  );
+  return rows[0] ?? null;
+}
+
+async function runRequest(id) {
+  const r = await claimRequest(id);
+  if (!r) return; // already claimed/handled elsewhere, or no longer runnable
+  // Belt-and-suspenders: claimRequest() only claims queued/approved rows,
   // but never trust that alone — refuse anything still awaiting_approval.
   assertRunnable(r);
-  await q(`UPDATE "AgentRequest" SET status='running', "startedAt"=now(), "updatedAt"=now() WHERE id=$1`, [r.id]);
   await emit("run", `Started: ${r.title}`, { level: "info", meta: { requestId: r.id, kind: r.kind } });
   try {
     let result = "";
@@ -362,16 +379,11 @@ async function runRequest(r) {
 
 async function processQueue() {
   // Never select awaiting_approval rows — only human-approved or
-  // never-needed-approval work reaches the hermes CLI.
-  const client = await pool.connect();
-  let rows;
-  try {
-    await client.query('BEGIN');
-    ({ rows } = await client.query(`SELECT * FROM "AgentRequest" WHERE status IN ('queued','approved') ORDER BY "createdAt" ASC FOR UPDATE SKIP LOCKED LIMIT 3`));
-    for (const r of rows) await client.query(`UPDATE "AgentRequest" SET status='running', "startedAt"=now(), "updatedAt"=now() WHERE id=$1`, [r.id]);
-    await client.query('COMMIT');
-  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
-  for (const r of rows) await runRequest(r);
+  // never-needed-approval work reaches the hermes CLI. The actual
+  // queued/approved -> running transition happens atomically per-row in
+  // claimRequest(), so listing candidate ids here needs no transaction.
+  const { rows } = await q(`SELECT id FROM "AgentRequest" WHERE status IN ('queued','approved') ORDER BY "createdAt" ASC LIMIT 3`);
+  for (const r of rows) await runRequest(r.id);
 }
 
 /* ─────────────── loops ─────────────── */

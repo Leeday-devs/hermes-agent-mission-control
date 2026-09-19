@@ -26,7 +26,7 @@ const KNOWN_PROMPT_KINDS = new Set(["oneshot", "chat"]);
 // Verbs/phrases that reach outside the system: messaging, publishing, money,
 // scheduling/booking, remote backups, or destructive operations.
 const SIDE_EFFECT_KEYWORDS =
-  /\b(send|e-?mail|dm|direct message|post|tweet|publish|deploy|release|delete|remove|destroy|drop\s+table|rm\s+-rf|cancel|refund|charge|pay|purchase|buy|order|invoice|withdraw|transfer|deposit|unsubscribe|schedule|book|sign|merge|push|backup|back\s+up|github)\b/i;
+  /\b(send|e-?mail|dm|direct message|post|tweet|publish|deploy|release|delete|remove|destroy|drop\s+table|rm\s+-rf|cancel|refund|charge|pay|purchase|buy|order|invoice|withdraw|transfer|deposit|unsubscribe|schedule|book|create\s+(?:an?\s+)?account|account\s+creation|sign[-\s]+up|register(?:\s+for)?|registration|sign|merge|push|backup|back\s+up|github)\b/i;
 
 export function classifyApproval(input: ApprovalInput): ApprovalResult {
   const kind = (input.kind || "").trim();
@@ -65,4 +65,13 @@ export function classifyApproval(input: ApprovalInput): ApprovalResult {
 
   // Unknown kind — fail closed rather than trust an unrecognized shape.
   return { sideEffecting: true, status: "awaiting_approval", reason: `unknown request kind "${kind}" — defaulting to approval` };
+}
+
+// cron.* requests carry the exact argv hermes-bridge will run (see
+// cron-parse.ts / buildRunArgs()). Letting an approver rewrite the title or
+// prompt of a cron request would let them approve one schedule/action while
+// silently substituting another, so cron requests may only be approved or
+// rejected as submitted — never edited.
+export function isEditableRequestKind(kind: string): boolean {
+  return !kind.trim().startsWith("cron.");
 }

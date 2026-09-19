@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assertRunnable, buildRunArgs } from "./commands.mjs";
+import { assertRunnable, buildRunArgs, claimTransition } from "./commands.mjs";
 
 test("assertRunnable throws for a request still awaiting approval", () => {
   assert.throws(
@@ -10,14 +10,39 @@ test("assertRunnable throws for a request still awaiting approval", () => {
 });
 
 test("assertRunnable throws for unexpected statuses", () => {
-  for (const status of ["done", "failed", "rejected", "running"]) {
+  for (const status of ["done", "failed", "rejected"]) {
     assert.throws(() => assertRunnable({ id: "r1", status }));
   }
 });
 
-test("assertRunnable allows queued and approved", () => {
+test("assertRunnable allows queued, approved, and running (already claimed)", () => {
   assert.doesNotThrow(() => assertRunnable({ id: "r1", status: "queued" }));
   assert.doesNotThrow(() => assertRunnable({ id: "r1", status: "approved" }));
+  assert.doesNotThrow(() => assertRunnable({ id: "r1", status: "running" }));
+});
+
+// Regression: bridge.mjs's claim step (queued/approved -> running) happens
+// atomically in SQL (UPDATE ... WHERE status IN (...) RETURNING *). The row
+// handed to runRequest() afterwards genuinely has status="running" — it must
+// NOT be rejected by assertRunnable/buildRunArgs, or every claimed request
+// would fail immediately after being claimed. claimTransition() models that
+// same atomic SQL contract so the claim -> build-args pipeline is
+// unit-testable without a live Postgres.
+test("claim-to-execution: claiming a queued/approved request marks it running, and it can still be run", () => {
+  for (const status of ["queued", "approved"]) {
+    const claimed = claimTransition({ id: "r1", status, kind: "oneshot", title: "t", prompt: "hi" });
+    assert.ok(claimed, `expected ${status} to be claimable`);
+    assert.equal(claimed.status, "running");
+    assert.doesNotThrow(() => assertRunnable(claimed));
+    const plan = buildRunArgs(claimed, { board: "default" });
+    assert.deepEqual(plan.argv, ["-z", "hi"]);
+  }
+});
+
+test("claim-to-execution: only queued/approved rows can be claimed; everything else is refused", () => {
+  for (const status of ["awaiting_approval", "running", "done", "failed", "rejected"]) {
+    assert.equal(claimTransition({ id: "r1", status }), null, status);
+  }
 });
 
 test("buildRunArgs refuses to build a command for an awaiting_approval row", () => {

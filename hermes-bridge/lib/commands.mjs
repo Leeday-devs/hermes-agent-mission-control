@@ -10,11 +10,19 @@
 // place that needs to change.
 export const HERMES_CLI_VERSION = "0.21.3";
 
-const RUNNABLE_STATUSES = new Set(["queued", "approved"]);
+// Statuses a request may be claimed *from* (queued/approved), and the
+// statuses it's legitimate for buildRunArgs() to see. "running" is included
+// here because the claim step (see claimTransition() below, mirrored by the
+// atomic `UPDATE ... WHERE status IN (...) RETURNING *` in bridge.mjs)
+// transitions queued/approved -> running *before* handing the row to
+// buildRunArgs — that's the row's genuine state at execution time, not a
+// bypass of approval.
+const CLAIMABLE_STATUSES = new Set(["queued", "approved"]);
+const RUNNABLE_STATUSES = new Set(["queued", "approved", "running"]);
 
-// Defense in depth: processQueue() in bridge.mjs already filters to
-// queued/approved rows via SQL, but every call path into buildRunArgs()
-// re-checks here so a request awaiting approval can never be executed.
+// Defense in depth: processQueue() in bridge.mjs already claims atomically
+// via SQL, but every call path into buildRunArgs() re-checks here so a
+// request awaiting approval can never be executed.
 export function assertRunnable(request) {
   if (!request || typeof request.status !== "string") {
     throw new Error("refusing to run request: missing status");
@@ -25,6 +33,18 @@ export function assertRunnable(request) {
   if (!RUNNABLE_STATUSES.has(request.status)) {
     throw new Error(`refusing to run request ${request.id}: unexpected status "${request.status}"`);
   }
+}
+
+// Models the atomic DB claim transition bridge.mjs performs with
+// `UPDATE "AgentRequest" SET status='running', ... WHERE id=$1 AND status
+// IN ('queued','approved') RETURNING *`. Only queued/approved rows may
+// become running; everything else (including an already-running or
+// awaiting_approval row) refuses the claim. Kept here, alongside
+// assertRunnable/buildRunArgs, so the claim -> execution pipeline is
+// unit-testable without a live Postgres.
+export function claimTransition(row) {
+  if (!row || !CLAIMABLE_STATUSES.has(row.status)) return null;
+  return { ...row, status: "running", startedAt: new Date().toISOString() };
 }
 
 // Returns { argv } for a `hermes` CLI invocation, or { local: kind } for
